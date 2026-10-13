@@ -173,10 +173,11 @@
 				 * selectedId、thrownId：選中與本次投出枚；aim：桌面瞄準座標；power：共同力度。
 				 * turn、elapsed、quiet：回合與靜止時間；epoch：隔離舊非同步與計時器。
 				 * cpuTimer：目前 AI 計時器；players：名稱與顏色；difficulty：AI 瞄準誤差。
-				 * walls：有限桌面的物理邊界；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。 */
+				 * walls：有限桌面的物理邊界；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。
+				 * contacts：本步真實接觸及局部力臂，求解結束後才施加遊戲助推。 */
 				active: false, mode: "cpu", current: 0, thrower: 0, status: "setup", winner: null, coins: [],
 				selectedId: null, thrownId: null, aim: null, power: 0.8, turn: 1, elapsed: 0, quiet: 0,
-				epoch: 0, cpuTimer: null, players: [], difficulty: "normal", walls: [], aimMesh: null, log: []
+				epoch: 0, cpuTimer: null, players: [], difficulty: "normal", walls: [], aimMesh: null, log: [], contacts: []
 			};
 			boot();
 
@@ -204,6 +205,7 @@
 				state.world.solver.iterations = 20;
 				state.world.defaultContactMaterial.friction = 0.4;
 				state.world.defaultContactMaterial.restitution = 0.1;
+				state.world.addEventListener("postStep", flushGameContacts);
 				const floor = new CANNON.Body({ /* mass：零表示固定桌面；shape：不會漏接像素格的無限平面。 */ mass: 0, shape: new CANNON.Plane() });
 				floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 				state.world.addBody(floor);
@@ -875,6 +877,7 @@
 				clearTimeout(game.cpuTimer);
 				game.cpuTimer = null;
 				game.status = "setup";
+				getGameElement("throw-game").disabled = true;
 				getGameElement("start-game").disabled = getGameElement("restart-game").disabled = true;
 				getGameElement("setup-status").textContent = "正在建立六枚 3D 字形…";
 				getGameElement("match-status").textContent = "正在建立新對局…";
@@ -948,7 +951,7 @@
 				for (const wall of game.walls) state.world.removeBody(wall);
 				game.walls = [];
 				// 固定高牆防止薄片飛出可見桌面，牆本身不造成淘汰。
-				const positions = [[-5.7, 1.4, 0, 0.1, 1.5, 4.3], [5.7, 1.4, 0, 0.1, 1.5, 4.3], [0, 1.4, -4.2, 5.8, 1.5, 0.1], [0, 1.4, 4.2, 5.8, 1.5, 0.1]];
+				const positions = [[-6.1, 10, 0, 0.5, 10.1, 4.6], [6.1, 10, 0, 0.5, 10.1, 4.6], [0, 10, -4.6, 6.6, 10.1, 0.5], [0, 10, 4.6, 6.6, 10.1, 0.5]];
 				for (const values of positions) {
 					const wall = new CANNON.Body({ /* mass：固定邊界；shape：以半長度指定牆。 */ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(values[3], values[4], values[5])) });
 					wall.position.set(values[0], values[1], values[2]);
@@ -963,6 +966,7 @@
 			}
 
 			function clearGameBodies() {
+				game.contacts = [];
 				for (const coin of game.coins) removeGameBody(coin);
 			}
 
@@ -1024,7 +1028,15 @@
 				body.quaternion.setFromEuler(0, -model.angle, 0);
 				body.updateInertiaWorld(true);
 				body.updateSolveMassProperties();
-				body.addEventListener("collide", (event) => handleGameContact(body, event));
+				body.addEventListener("collide", (event) => {
+					if (!game.active || game.status !== "simulating") return;
+
+					const contact = event.contact, offset = contact.bi === body ? contact.ri : contact.rj;
+					game.contacts.push({
+						/* body、other：真實接觸雙方；point：局部材質力臂；impact：求解前法向速度。 */
+						body, other: event.body, point: body.quaternion.conjugate().vmult(offset), impact: contact.getImpactVelocityAlongNormal()
+					});
+				});
 				body.addEventListener("sleep", () => {
 					// 自動休眠後接觸對可能省略，先沿真正的最後接觸保存支撐證據。
 					const coin = game.coins.find((item) => item.body === body);
@@ -1081,13 +1093,33 @@
 
 				const coin = availableGameCoins(game.current).find((item) => item.id === game.selectedId);
 				if (!coin) return false;
+				const prepared = prepareGameThrow(coin);
+				if (!prepared) {
+					updateGameUI("這個落點周圍有堆疊薄片，請換個瞄準點或提高力道再投擲。");
+					return false;
+				}
 
 				// 步驟 1：保存攻擊者並清除本次接觸旗標，桌面重投亦保留原物性。
 				game.thrower = game.current;
+				game.contacts = [];
 				game.thrownId = coin.id;
 				for (const item of game.coins) { item.hit = false; item.assistUsed = false; }
 				removeGameBody(coin);
 				wakeGameCoins();
+				coin.body = prepared;
+				coin.mesh = makeGlyphMesh(coin.model);
+				coin.mesh.material[2].color.set(game.players[coin.owner].color);
+				coin.hit = true;
+				state.world.addBody(coin.body);
+				state.scene.add(coin.mesh);
+				game.status = "simulating";
+				game.quiet = game.elapsed = 0;
+				updateGameUI(`${game.players[game.thrower].name}投出「${coin.text}」，等待落地結果…`);
+				return true;
+			}
+
+			function prepareGameThrow(coin) {
+				// 在拿起桌面枚、改回合前預檢，拒絕時保留整場狀態。
 				const model = coin.model;
 				const power = Math.max(0, Math.min(1, Number(game.power) || 0));
 				const energy = Math.min(4 * balanceProfile(model).offense * power * power, 18 * model.mass, 0.72 / model.mass);
@@ -1099,23 +1131,51 @@
 				const horizontal = velocity * Math.sqrt(1 - 0.22 ** 2);
 				const flightTime = (Math.sqrt(vertical * vertical + 2 * config.gravity * height) - vertical) / config.gravity;
 				const direction = game.current === 0 ? 1 : -1;
-				const vx = direction * horizontal * 0.6, vz = -direction * horizontal * 0.8;
-				const position = new CANNON.Vec3(game.aim.x - vx * flightTime, config.thickness / 2 + 0.003 + height, game.aim.z - vz * flightTime);
-				position.x = Math.max(-4.3, Math.min(4.3, position.x));
-				position.z = Math.max(-2.8, Math.min(2.8, position.z));
-				coin.body = makeGameBody(model, position);
-				coin.body.velocity.set(vx, -vertical, vz);
-				const localSpin = new CANNON.Vec3(Math.sqrt(2 * spinEnergy / model.inertia.x), 0, 0);
-				coin.body.angularVelocity.copy(coin.body.quaternion.vmult(localSpin));
-				coin.mesh = makeGlyphMesh(model);
-				coin.mesh.material[2].color.set(game.players[coin.owner].color);
-				coin.hit = true;
-				state.world.addBody(coin.body);
-				state.scene.add(coin.mesh);
-				game.status = "simulating";
-				game.quiet = game.elapsed = 0;
-				updateGameUI(`${game.players[game.thrower].name}投出「${coin.text}」，等待落地結果…`);
-				return true;
+				const initialAngle = Math.atan2(-direction * 0.8, direction * 0.6);
+				for (let attempt = 0; attempt < 8; attempt++) {
+					const angle = initialAngle + attempt * Math.PI / 4;
+					const vx = horizontal * Math.cos(angle), vz = horizontal * Math.sin(angle);
+					const position = new CANNON.Vec3(game.aim.x - vx * flightTime, config.thickness / 2 + 0.003 + height, game.aim.z - vz * flightTime);
+					const body = makeGameBody(model, position);
+					body.updateAABB();
+					const box = body.aabb;
+					if (box.lowerBound.x < -5.6 || box.upperBound.x > 5.6 || box.lowerBound.z < -4.1 || box.upperBound.z > 4.1) continue;
+
+					const blocked = game.coins.some((other) => {
+						if (other === coin || !other.body) return false;
+
+						other.body.updateAABB();
+						return box.overlaps(other.body.aabb);
+					});
+					if (blocked) continue;
+
+					body.velocity.set(vx, -vertical, vz);
+					const localSpin = new CANNON.Vec3(Math.sqrt(2 * spinEnergy / model.inertia.x), 0, 0);
+					body.angularVelocity.copy(body.quaternion.vmult(localSpin));
+					return body;
+				}
+				return null;
+			}
+
+			function flushGameContacts() {
+				const contacts = game.contacts.splice(0);
+				if (!game.active || game.status !== "simulating") return;
+
+				// 接觸順序不可截斷六枚之間的連鎖；只沿本步真實接觸傳遞。
+				for (let pass = 0; pass < game.coins.length; pass++) {
+					for (const entry of contacts) {
+						const coin = game.coins.find((item) => item.body === entry.body);
+						const other = game.coins.find((item) => item.body === entry.other);
+						if (coin && other?.hit) coin.hit = true;
+					}
+				}
+				for (const entry of contacts) {
+					const offset = entry.body.quaternion.vmult(entry.point);
+					handleGameContact(entry.body, {
+						/* body：對方；contact：保存的真接觸，依目前姿態還原世界力臂。 */
+						body: entry.other, contact: { bi: entry.body, ri: offset, getImpactVelocityAlongNormal: () => entry.impact }
+					});
+				}
 			}
 
 			function handleGameContact(body, event) {
@@ -1259,7 +1319,13 @@
 				const coin = [...available].sort((a, b) => attackScore(b) - attackScore(a))[0];
 				const aim = new THREE.Vector3(2.7, 0, -1.4);
 				if (target) {
-					const cell = target.model.cells[farthestCell(target.model)];
+					// 八個方向輪替試探外緣，避免反覆打在同一個被疊牌遮住的點。
+					const angle = Math.floor(game.turn / 2) % 8 * Math.PI / 4;
+					const dx = Math.cos(angle), dz = Math.sin(angle);
+					const cell = target.model.cells.reduce((best, candidate) => {
+						const point = localPoint(candidate, target.model), previous = localPoint(best, target.model);
+						return point.x * dx + point.z * dz > previous.x * dx + previous.z * dz ? candidate : best;
+					});
 					const point = target.body.pointToWorldFrame(localPoint(cell, target.model));
 					aim.set(point.x, 0, point.z);
 				}
@@ -1287,7 +1353,15 @@
 					game.selectedId = plan.coinId;
 					game.aim.copy(plan.aim);
 					game.power = plan.power;
-					throwGameCoin();
+					if (throwGameCoin()) return;
+
+					// 堆疊阻擋時嘗試安全桌面落點，仍由同一預檢及發射流程處理。
+					for (const point of [[0, 0], [-3, -2], [3, 2], [-3, 2], [3, -2]]) {
+						game.aim.set(point[0], 0, point[1]);
+						if (throwGameCoin()) return;
+					}
+					game.power = 1;
+					scheduleCpuTurn();
 				}, 900);
 			}
 

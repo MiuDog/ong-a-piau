@@ -29,7 +29,7 @@ async function instrumentRoute(route) {
 
 	// 只暴露測試接點，不更改規則、判面或碰撞處理。
 	const response = await route.fetch();
-	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, handleGameContact, localPoint }; </script>";
+	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, handleGameContact, flushGameContacts, localPoint }; </script>";
 	const html = (await response.text()).replace("</script>", expose);
 	await route.fulfill({ /* response：保留原回應；body：唯此測試可見的接點。 */ response, body: html });
 }
@@ -152,9 +152,14 @@ async function runChecks() {
 		const player = api.game.current;
 		const candidate = owned(player).find((coin) => coin.body === null) || owned(player)[0];
 		requireCondition(api.selectGameCoin(candidate.id), "合法枚應可選取");
-		api.game.aim.set(0, 0, 0);
-		api.game.power = 0.4;
-		requireCondition(api.throwGameCoin(), "合法出手應建立真實投擲");
+		api.game.power = 0.8;
+		let launched = false;
+		// 生命周期 fixture 要取得可用投擲，再安排特定接觸；不可依賴舊版穿入疊牌出生。
+		for (const [x, z] of [[0, 0], [0, 2.5], [-3, 2], [3, -2]]) {
+			api.game.aim.set(x, 0, z);
+			if (api.throwGameCoin()) { launched = true; break; }
+		}
+		requireCondition(launched, "合法且未受阻出手應建立真實投擲");
 		requireCondition(candidate.body && api.state.world.bodies.includes(candidate.body), "投出枚必須加入物理世界");
 		return candidate;
 	}
@@ -180,7 +185,7 @@ async function runChecks() {
 		for (const [index, coin] of owned(0).entries()) place(coin, -4 + index * 4);
 		const selected = owned(0)[1], oldBody = selected.body;
 		requireCondition(api.selectGameCoin(selected.id), "沒有手中枚時可選己方桌面枚");
-		api.game.power = 0.4;
+		api.game.power = 0.8;
 		requireCondition(api.throwGameCoin(), "己方桌面枚應可重投");
 		requireCondition(selected.body && api.state.world.bodies.includes(selected.body), "重投後同枚必須仍在世界");
 		if (selected.body !== oldBody) requireCondition(!api.state.world.bodies.includes(oldBody), "換剛體時必須移除舊剛體");
@@ -219,6 +224,8 @@ async function runChecks() {
 		// 下一輪再投出剛捕獲的同枚，確認保留模型不只停留在資料欄位。
 		beginThrow();
 		api.finishGameTurn(true);
+		api.game.aim.set(-3, 0, 2);
+		api.game.power = 1;
 		requireCondition(api.selectGameCoin(enemy.id) && api.throwGameCoin(), "捕獲枚在攻方下一回合必須可再次使用");
 		requireCondition(enemy.body && Math.abs(enemy.body.mass - enemyModel.mass) < 1e-10, "重投捕獲枚必須沿用原質量");
 		for (const axis of ["x", "y", "z"]) requireCondition(Math.abs(enemy.body.inertia[axis] - enemyModel.inertia[axis]) < 1e-10, "重投捕獲枚必須沿用原主慣量");
@@ -527,6 +534,127 @@ async function runChecks() {
 		}
 	}
 
+	async function deferredContactCheck() {
+		await newGame();
+		const enemy = owned(1)[0];
+		place(enemy);
+		const attacker = beginThrow();
+		place(attacker, 3);
+		enemy.body.updateAABB();
+		attacker.body.updateAABB();
+		attacker.body.position.x += enemy.body.aabb.upperBound.x - attacker.body.aabb.lowerBound.x - 0.002;
+		attacker.body.aabbNeedsUpdate = true;
+		attacker.body.velocity.set(-3, 0, 0);
+		const impulses = [], originalImpulse = enemy.body.applyImpulse;
+		let callbacks = 0, savedContact = null;
+		function observeImpulse(impulse, point) {
+			// 只量測真正施力前後；不改衝量、位置、朝向或求解順序。
+			const before = kineticEnergy(this), spin = this.angularVelocity.clone(), position = this.position.clone(), orientation = this.quaternion.clone();
+			originalImpulse.call(this, impulse, point);
+			impulses.push({ /* energy、spin：實際動能及角速增量，用於驗證求解後仍有助推。 */ energy: kineticEnergy(this) - before, spin: this.angularVelocity.distanceTo(spin) });
+			near(this.position.distanceTo(position), 0, "真實助推不可傳送位置");
+			for (const axis of ["x", "y", "z", "w"]) near(this.quaternion[axis], orientation[axis], "真實助推不可強制翻面");
+		}
+		enemy.body.applyImpulse = observeImpulse;
+		function observeCollision(event) {
+			if (event.body !== attacker.body) return;
+
+			callbacks++;
+			if (callbacks === 1) {
+				requireCondition(impulses.length === 0 && !enemy.assistUsed, "碰撞回呼內不可提前施加會被求解器抵消的助推");
+				savedContact = api.game.contacts.find((entry) => entry.body === enemy.body && entry.other === attacker.body);
+				requireCondition(savedContact && Number.isFinite(savedContact.impact), "必須保存真實接觸及入射速度");
+			}
+		}
+		enemy.body.addEventListener("collide", observeCollision);
+		step(1);
+		requireCondition(callbacks > 0 && enemy.hit && enemy.assistUsed, "真正碰撞必須於本步完成命中及助推");
+		requireCondition(impulses.length === 1 && impulses[0].spin > 0.01, "求解後真正邊緣衝量必須產生非零角速回應");
+		const coverage = attacker.model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
+		requireCondition(impulses[0].energy <= 1.2 * (0.75 - 0.5 * coverage) / 0.75 + 1e-8, "真實求解後助推仍須遵守完整動能上限");
+		requireCondition(api.game.contacts.length === 0 && enemy.owner === 1, "本步接觸佇列應清空且不能直接捕獲");
+		step(90);
+		requireCondition(impulses.length === 1, "後續真實碰撞不可重複助推同一敵枚");
+
+		// 保留真正產生的接觸，重現重開發生於待處理接觸存在時的生命週期。
+		api.game.contacts.push(savedContact);
+		await newGame();
+		requireCondition(api.game.contacts.length === 0, "重開必須丟棄舊局待處理接觸");
+		api.game.contacts.push(savedContact);
+		api.flushGameContacts();
+		requireCondition(api.game.contacts.length === 0 && api.game.coins.every((coin) => !coin.body && !coin.hit && !coin.assistUsed), "過期接觸到達不可改變新局或遺留佇列");
+		assertSix();
+	}
+
+	async function highBoundaryCheck() {
+		for (const axis of ["x", "z"]) {
+			await newGame();
+			const coin = owned(0)[0], body = place(coin);
+			body.position.y = 3;
+			body.position[axis] = axis === "x" ? 3.8 : 2.3;
+			body.velocity[axis] = 6;
+			body.aabbNeedsUpdate = true;
+			let contacts = 0;
+			const observeWall = (event) => { if (api.game.walls.includes(event.body)) contacts++; };
+			body.addEventListener("collide", observeWall);
+			const limit = axis === "x" ? 5.6 : 4.1;
+			for (let tick = 0; tick < 120; tick++) {
+				step(1);
+				body.updateAABB();
+				requireCondition(body.aabb.upperBound[axis] <= limit + 0.08, "高處飛行薄片不得穿出可瞄準桌面的邊界");
+			}
+			requireCondition(contacts > 0, "高處邊界必須以真實剛體接觸阻擋，不以座標截斷代替");
+			requireCondition(coin.owner === 0 && coin.body === body, "撞牆不得淘汰、捕獲或複製薄片");
+			assertSix();
+		}
+	}
+
+	async function spawnSafetyCheck() {
+		for (const fromBoard of [false, true]) {
+			await newGame();
+			const selected = owned(0)[0], enemy = owned(1)[0];
+			place(enemy);
+			if (fromBoard) {
+				for (const [index, coin] of owned(0).entries()) place(coin, -3 + 3 * index, -2.5);
+			}
+			requireCondition(api.selectGameCoin(selected.id), "出生拒絕驗收必須由合法選枚開始");
+			api.game.aim.set(0, 0, 0);
+			api.game.power = 0;
+			const beforeBodies = api.game.coins.map((coin) => coin.body), worldBodies = [...api.state.world.bodies];
+			const beforeState = JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.hit, coin.assistUsed, coin.body?.position, coin.body?.quaternion]));
+			const turn = api.game.turn, current = api.game.current, thrownId = api.game.thrownId;
+			requireCondition(!api.throwGameCoin(), "零能量出生點被敵枚占滿時必須拒絕，不能深度穿入");
+			requireCondition(api.game.status === "ready" && api.game.turn === turn && api.game.current === current && api.game.thrownId === thrownId, "拒絕出生不得開始或消耗回合");
+			requireCondition(api.game.coins.every((coin, index) => coin.body === beforeBodies[index]), "拒絕出生不得刪除或替換任何桌面剛體");
+			requireCondition(api.state.world.bodies.length === worldBodies.length && worldBodies.every((body) => api.state.world.bodies.includes(body)), "拒絕後物理世界必須維持原物件集合");
+			requireCondition(JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.hit, coin.assistUsed, coin.body?.position, coin.body?.quaternion])) === beforeState, "拒絕出生不得更改持有、接觸旗標或姿態");
+			assertSix();
+		}
+
+		await newGame();
+		const enemy = owned(1)[0];
+		const obstacle = place(enemy, -2, 2);
+		obstacle.position.y = 0.5;
+		obstacle.aabbNeedsUpdate = true;
+		const selected = owned(0)[0];
+		requireCondition(api.selectGameCoin(selected.id), "安全出生應接受合法手中枚");
+		api.game.aim.set(0, 0, 0);
+		api.game.power = 1;
+		requireCondition(api.throwGameCoin(), "仍有不重疊方向時應尋找可用出生位置");
+		selected.body.updateAABB();
+		obstacle.updateAABB();
+		const overlap = ["x", "y", "z"].every((axis) => Math.min(selected.body.aabb.upperBound[axis], obstacle.aabb.upperBound[axis]) > Math.max(selected.body.aabb.lowerBound[axis], obstacle.aabb.lowerBound[axis]));
+		requireCondition(!overlap, "成功出生的實際碰撞 AABB 不得與既有疊牌重疊");
+		for (const axis of ["x", "z"]) {
+			const limit = axis === "x" ? 5.6 : 4.1;
+			requireCondition(selected.body.aabb.lowerBound[axis] >= -limit && selected.body.aabb.upperBound[axis] <= limit, "成功出生的整枚碰撞形狀必須在牆內");
+		}
+		const body = selected.body, energy = kineticEnergy(body) + body.mass * api.config.gravity * (body.position.y - floorHeight);
+		const coverage = selected.model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
+		near(energy, 3 - 2 * coverage, "另尋安全出生方向不可增添高度、平移或旋轉能量");
+		assertSix();
+	}
+
 	function recordGroundSupport(coin) {
 		// 暫停自動睡眠，先讓真正接觸方程穩定；不由測試偽造支撐紀錄。
 		coin.body.allowSleep = false;
@@ -630,6 +758,9 @@ async function runChecks() {
 	await check("遊戲投擲平移、旋轉、高度共用有界預算", gameEnergyCheck);
 	await check("遊戲規範化保留原模型、密度攻防實際單調", normalizedBalanceCheck);
 	await check("遊戲邊緣能量隨攻方進攻份額下降且每枚只加一次", gameEdgeEnergyCheck);
+	await check("真實接觸求解後助推、一次性與重開佇列清理", deferredContactCheck);
+	await check("高處真實邊界接觸保留薄片及所有權", highBoundaryCheck);
+	await check("安全出生保留能量、受阻拒絕不改原對局", spawnSafetyCheck);
 	await check("睡眠接觸省略後仍停止、移至空中快取失效", sleepingSupportCheck);
 	await check("睡眠疊放支撐、捕獲下層後喚醒與失效", supportedStackRemovalCheck);
 	await check("新投擲清除前回合支撐紀錄並喚醒桌面枚", newThrowInvalidatesSupportCheck);

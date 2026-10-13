@@ -94,9 +94,12 @@ flowchart TD
 	Epoch -->|否| Ignore[丟棄過期結果]
 	Ready --> Available[availableGameCoins：手上優先]
 	Available --> Throw[throwGameCoin]
-	Throw --> Shape[makeGameBody → collisionRectangles]
+	Throw --> Prepare[prepareGameThrow：安全出生預檢]
+	Prepare --> Shape[makeGameBody → collisionRectangles]
 	Shape --> Sim[simulating：真實物理步進]
-	Sim --> Hit[handleGameContact：接觸鏈命中]
+	Sim --> Queue[collide：保存真接觸]
+	Queue --> Flush[postStep → flushGameContacts]
+	Flush --> Hit[handleGameContact：接觸鏈命中]
 	Hit --> Edge[applyGameEdgeAssist：有界一次助推]
 	Sim --> Rest[isGameCoinResting]
 	Rest --> Capture[finishGameTurn：命中敵方背面收回手上]
@@ -127,11 +130,13 @@ flowchart TD
 | `leaveGame` | 取消 CPU、隔離舊世代、清理對局並還原設定／物理测试容器。 |
 | `availableGameCoins` | filter 所有權與手上枚，實現手上優先。 |
 | `selectGameCoin` | 驗證 ready 與合法枚後更新選取。 |
-| `makeGameBody` | 合併背景碰撞區，保留主軸質量／慣量；collide 回呼處理接觸，sleep 回呼保存真實支撐。 |
+| `makeGameBody` | 合併背景碰撞區，保留主軸質量／慣量；collide 回呼保存接觸雙方、局部力臂與入射速度，sleep 回呼保存真實支撐。 |
 | `balanceGameModel` | 由覆蓋率限定遊戲重量，非原地縮放各像素／慣量／穩定值；保留原始模型快取、重心與輪廓。 |
 | `collisionRectangles` | 合併相鄰完整行段，保留遮罩空洞與佔據區；map 回呼建立格座標集合。 |
 | `throwGameCoin` | 保存本次攻擊者、拾起合法枚、喚醒其他枚、分配位能／平移／旋轉，開始真實模擬。 |
 | `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
+| `flushGameContacts` | 每步求解完成後清空接觸佇列；沿真實接觸傳遞六枚命中關係，再以目前姿態還原力臂、處理一次助推。 |
+| `prepareGameThrow` | 保持共同能量／速度預算，預檢八個入射方向的實際出生包圍盒；排除牆及既有堆疊，拒絕時不改回合或拿走枚。 |
 | `applyGameEdgeAssist` | 在真实接觸力臂施加有動能增量上限的補充衝量，不指定結果。 |
 | `isGameCoinResting` | 分別檢查速度，BFS 真實支撐路徑，或驗證休眠快照；map 回呼記錄姿態證據。 |
 | `validGameSupportSnapshot` | every/some 檢查休眠路徑中的物件仍存在、未移位、未旋轉且未移動。 |
@@ -205,6 +210,8 @@ flowchart TD
 | `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
 | `sampleRawRectangle`、內部 `knownImage`、`normalizedBalanceCheck` | 解析覆蓋率階段驗重量、完整投擲能量、幾何與重心保持，以及不污染校準模型。 |
 | `kineticEnergy`、`gameEdgeEnergyCheck` | 以世界慣量計算真正動能增量，驗攻方份額、一次助推、衝量上限且不直接改姿態／權屬。 |
+| `deferredContactCheck`、`highBoundaryCheck` | 驗真正接觸在求解後才助推、動能上限與舊佇列隔離，以及高處飛向 x／z 牆的實際碰撞。 |
+| `spawnSafetyCheck` | 驗成功出生的完整形狀在牆內且不重疊，能量不變；手中及桌面枚全阻塞拒絕時不改原對局。 |
 
 ### 獨立測試模組
 
