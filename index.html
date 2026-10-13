@@ -470,7 +470,7 @@
 					});
 					if (owner >= 0) shapes[owner].holes.push(makePath(hole, model, false));
 				}
-				const geometry = new THREE.ExtrudeGeometry(shapes, {
+				let geometry = new THREE.ExtrudeGeometry(shapes, {
 					/* depth：與碰撞一致的厚度；bevelEnabled：不額外膨脹輪廓；steps：薄片單層擠出。 */
 					depth: config.thickness, bevelEnabled: false, steps: 1
 				});
@@ -481,10 +481,11 @@
 				geometry.translate(0, 0, -config.thickness / 2);
 				geometry.rotateX(-Math.PI / 2);
 				geometry.rotateY(model.angle);
+				if (model.curve) geometry = curveGlyphGeometry(geometry, model);
 				geometry.clearGroups();
-				const normals = geometry.getAttribute("normal");
+				const normals = geometry.getAttribute("normal"), vertexCount = geometry.getAttribute("position").count;
 				let groupStart = 0, groupMaterial = -1;
-				for (let i = 0; i < positions.count; i += 3) {
+				for (let i = 0; i < vertexCount; i += 3) {
 					let materialIndex = 2;
 					if (normals.getY(i) > 0.8) materialIndex = 0;
 					else if (normals.getY(i) < -0.8) materialIndex = 1;
@@ -494,7 +495,7 @@
 						groupMaterial = materialIndex;
 					}
 				}
-				geometry.addGroup(groupStart, positions.count - groupStart, groupMaterial);
+				geometry.addGroup(groupStart, vertexCount - groupStart, groupMaterial);
 				const texture = new THREE.CanvasTexture(model.canvas);
 				texture.colorSpace = THREE.SRGBColorSpace;
 				const top = new THREE.MeshStandardMaterial({ /* map：原始文字與 emoji 色彩；alphaTest：裁掉抗鋸齒透明邊。 */ map: texture, alphaTest: 0.1 });
@@ -906,7 +907,7 @@
 						const key = `${descriptor.text}|${family}`;
 						const rawModel = cache.get(key) || sampleGlyph(descriptor.text, family);
 						cache.set(key, rawModel);
-						const model = balanceGameModel(rawModel);
+						const model = curveGameModel(balanceGameModel(rawModel));
 						coins.push({
 							/* id、owner、text、font：承接已驗證的永久身分與外觀設定。
 							 * model：捕獲後仍共用原物性；body、mesh：null 表示在手上。
@@ -1039,6 +1040,10 @@
 				const orientation = new CANNON.Quaternion();
 				orientation.setFromEuler(0, model.angle, 0);
 				for (const rectangle of collisionRectangles(model)) {
+					if (model.curve) {
+						addCurvedCollision(body, rectangle, model);
+						continue;
+					}
 					const point = { /* x、z：相鄰像素合併區的幾何中心，不改原像素質量積分。 */ x: (rectangle.col + rectangle.width / 2) * model.step - config.size / 2, z: (rectangle.row + rectangle.height / 2) * model.step - config.size / 2 };
 					body.addShape(new CANNON.Box(new CANNON.Vec3(rectangle.width * model.step / 2, config.thickness / 2, rectangle.height * model.step / 2)), localPoint(point, model), orientation);
 				}
@@ -1080,6 +1085,102 @@
 					inertia: new CANNON.Vec3(raw.inertia.x * scale, raw.inertia.y * scale, raw.inertia.z * scale),
 					stability: raw.stability * scale, rawMass: raw.mass, physicalScale: scale
 				};
+			}
+
+			function curveGameModel(raw) {
+				// 僅改遊戲薄片：字框尺度限制曲率，稀疏字不可形成過度尖銳的小碗。
+				let radiusSquared = (config.size / 2) ** 2;
+				for (const cell of raw.cells) {
+					for (const dx of [-raw.step / 2, raw.step / 2]) {
+						for (const dz of [-raw.step / 2, raw.step / 2]) {
+							const point = localPoint({ x: cell.x + dx, z: cell.z + dz }, raw);
+							radiusSquared = Math.max(radiusSquared, point.x ** 2 + point.z ** 2);
+						}
+					}
+				}
+				const height = 0.18;
+				const mean = raw.cells.reduce((sum, cell) => {
+					const point = localPoint(cell, raw);
+					return sum + cell.mass * height * (point.x ** 2 + point.z ** 2) / radiusSquared;
+				}, 0) / raw.mass;
+				let xx = 0, zz = 0, xh = 0, zh = 0;
+				for (const cell of raw.cells) {
+					const point = localPoint(cell, raw), lift = height * (point.x ** 2 + point.z ** 2) / radiusSquared - mean;
+					xx += cell.mass * point.x ** 2;
+					zz += cell.mass * point.z ** 2;
+					xh += cell.mass * point.x * lift;
+					zh += cell.mass * point.z * lift;
+				}
+				const model = {
+					/* ...raw：原遊戲材質，不修改快取；curve：翹曲高度與去均值／線性項，維持質點重心及主軸。 */
+					...raw, curve: { /* height、radiusSquared：有界曲率；mean、tiltX、tiltZ：質點重心與交叉慣量修正。 */ height, radiusSquared, mean, tiltX: xx > 1e-12 ? xh / xx : 0, tiltZ: zz > 1e-12 ? zh / zz : 0 }
+				};
+				model.cells = raw.cells.map((cell) => {
+					const point = localPoint(cell, raw);
+					return { /* ...cell：原像素位置、質量及遮罩；lift：此質點的實際翹曲高度。 */ ...cell, lift: glyphSurfaceHeight(model, point.x, point.z) };
+				});
+				const verticalMoment = model.cells.reduce((sum, cell) => sum + cell.mass * cell.lift ** 2, 0);
+				model.inertia = new CANNON.Vec3(raw.inertia.x + verticalMoment, raw.inertia.y, raw.inertia.z + verticalMoment);
+				return model;
+			}
+
+			function glyphSurfaceHeight(model, x, z) {
+				if (!model.curve) return 0;
+
+				const curve = model.curve;
+				return curve.height * (x * x + z * z) / curve.radiusSquared - curve.mean - curve.tiltX * x - curve.tiltZ * z;
+			}
+
+			function addCurvedCollision(body, rectangle, model) {
+				// 在原佔據矩形內切分小凸薄楔，不填孔洞；四角近似連續二次曲面。
+				for (let row = 0; row < rectangle.height; row += 3) {
+					for (let col = 0; col < rectangle.width; col += 3) {
+						const width = Math.min(3, rectangle.width - col), depth = Math.min(3, rectangle.height - row);
+						const x = (rectangle.col + col) * model.step - config.size / 2, z = (rectangle.row + row) * model.step - config.size / 2;
+						const corners = [[x, z], [x + width * model.step, z], [x + width * model.step, z + depth * model.step], [x, z + depth * model.step]];
+						const vertices = [];
+						for (const side of [-1, 1]) {
+							for (const corner of corners) {
+								const point = localPoint({ x: corner[0], z: corner[1] }, model);
+								point.y = glyphSurfaceHeight(model, point.x, point.z) + side * config.thickness / 2;
+								vertices.push(point);
+							}
+						}
+						const center = vertices.reduce((sum, point) => { sum.vadd(point, sum); return sum; }, new CANNON.Vec3());
+						center.scale(1 / vertices.length, center);
+						for (const point of vertices) point.vsub(center, point);
+						const shape = new CANNON.ConvexPolyhedron({ /* vertices：以片段中心為原點的翹曲上下表面；faces：向外繞序的六個凸面。 */ vertices, faces: [[0, 1, 2, 3], [4, 7, 6, 5], [0, 4, 5, 1], [1, 5, 6, 2], [2, 6, 7, 3], [3, 7, 4, 0]] });
+						body.addShape(shape, center);
+					}
+				}
+			}
+
+			function curveGlyphGeometry(source, model) {
+				const positions = source.getAttribute("position"), sourceUv = source.getAttribute("uv");
+				const vertices = [], coordinates = [];
+				const vertex = (index) => ({ /* point、uv：原輪廓三角形座標與字形紋理，細分後仍保留孔洞。 */ point: new THREE.Vector3(positions.getX(index), positions.getY(index), positions.getZ(index)), uv: new THREE.Vector2(sourceUv.getX(index), sourceUv.getY(index)) });
+				const split = (a, b, c, depth) => {
+					const lengths = [a.point.distanceToSquared(b.point), b.point.distanceToSquared(c.point), c.point.distanceToSquared(a.point)];
+					const longest = lengths.indexOf(Math.max(...lengths));
+					if (lengths[longest] > 0.04 && depth < 10) {
+						const points = [a, b, c], left = points[longest], right = points[(longest + 1) % 3], third = points[(longest + 2) % 3];
+						const middle = { /* point、uv：線性插值頂點，最後才套曲面高度。 */ point: left.point.clone().add(right.point).multiplyScalar(0.5), uv: left.uv.clone().add(right.uv).multiplyScalar(0.5) };
+						split(left, middle, third, depth + 1);
+						split(middle, right, third, depth + 1);
+						return;
+					}
+					for (const item of [a, b, c]) {
+						vertices.push(item.point.x, item.point.y + glyphSurfaceHeight(model, item.point.x, item.point.z), item.point.z);
+						coordinates.push(item.uv.x, item.uv.y);
+					}
+				};
+				for (let i = 0; i < positions.count; i += 3) split(vertex(i), vertex(i + 1), vertex(i + 2), 0);
+				const geometry = new THREE.BufferGeometry();
+				geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
+				geometry.setAttribute("uv", new THREE.Float32BufferAttribute(coordinates, 2));
+				geometry.computeVertexNormals();
+				source.dispose();
+				return geometry;
 			}
 
 			function collisionRectangles(model) {
@@ -1527,7 +1628,7 @@
 					const profile = balanceProfile(selected.model);
 					const point = localPoint(selected.model.cells[farthestCell(selected.model)], selected.model);
 					const agility = Math.hypot(point.z / selected.model.inertia.x, point.x / selected.model.inertia.z);
-					getGameElement("selected-stats").textContent = `重量 ${selected.model.mass.toFixed(2)} · 穩定 ${selected.model.stability.toFixed(2)} · 翻轉靈敏度 ${agility.toFixed(1)}。進攻 ${(profile.offense * 100).toFixed(0)}%／防守 ${(profile.defense * 100).toFixed(0)}%`;
+					getGameElement("selected-stats").textContent = `重量 ${selected.model.mass.toFixed(2)} · 穩定參考 ${selected.model.stability.toFixed(2)} · 翻轉靈敏度 ${agility.toFixed(1)}。進攻 ${(profile.offense * 100).toFixed(0)}%／防守 ${(profile.defense * 100).toFixed(0)}%`;
 				}
 				const winner = getGameElement("winner");
 				winner.hidden = game.status !== "won";

@@ -30,7 +30,7 @@ async function instrumentRoute(route) {
 
 	// 只暴露測試接點，不更改規則、判面或碰撞處理。
 	const response = await route.fetch();
-	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, handleGameContact, flushGameContacts, updateGameRestitution, localPoint }; </script>";
+	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, makeGlyphMesh, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, curveGameModel, glyphSurfaceHeight, handleGameContact, flushGameContacts, updateGameRestitution, localPoint }; </script>";
 	const html = (await response.text()).replace("</script>", expose);
 	await route.fulfill({ /* response：保留原回應；body：唯此測試可見的接點。 */ response, body: html });
 }
@@ -105,18 +105,34 @@ async function runChecks() {
 		requireCondition(actual.size === expected.size, "碰撞合併不得遺失原字形筆畫");
 	}
 
+	function shapeWorldVertices(body, index) {
+		const shape = body.shapes[index], extent = shape.halfExtents;
+		const vertices = shape.vertices ? shape.vertices.map((vertex) => vertex.clone()) : [];
+		if (extent) {
+			for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) vertices.push(body.position.clone().set(x * extent.x, y * extent.y, z * extent.z));
+		}
+		requireCondition(vertices.length === 8, "每個碰撞分片必須是八角點的實心薄片");
+		return vertices.map((vertex) => body.quaternion.vmult(body.shapeOrientations[index].vmult(vertex).vadd(body.shapeOffsets[index])));
+	}
+
 	function assertBodyMask(body, model) {
-		// 從真正引擎碰撞盒反推原網格，不能只驗證合併清單卻放過建立剛體時的座標錯誤。
+		// 從真正引擎方盒／翹曲凸片的世界角點反推網格，仍逐格拒絕填洞、重疊與漏格。
 		const rectangles = [];
 		for (let index = 0; index < body.shapes.length; index++) {
-			const extent = body.shapes[index].halfExtents;
-			requireCondition(extent, "字形物理必須由保留輪廓的薄方盒組成");
-			const center = body.quaternion.vmult(body.shapeOffsets[index]);
-			const orientation = body.quaternion.mult(body.shapeOrientations[index]);
-			near(Math.abs(orientation.w), 1, "初始世界碰撞盒必須保持原字形網格朝向");
-			near(extent.y * 2, api.config.thickness, "合併不得改變厚度");
-			const width = extent.x * 2 / model.step, height = extent.z * 2 / model.step;
-			rectangles.push({ /* row、col：從世界相對重心位置還原的起始格；width、height：引擎盒尺寸還原格數。 */ row: (center.z + model.cz + api.config.size / 2) / model.step - height / 2, col: (center.x + model.cx + api.config.size / 2) / model.step - width / 2, width, height });
+			const vertices = shapeWorldVertices(body, index), pairs = new Map();
+			for (const vertex of vertices) {
+				const key = `${vertex.x.toFixed(8)},${vertex.z.toFixed(8)}`;
+				if (!pairs.has(key)) pairs.set(key, []);
+				pairs.get(key).push(vertex.y);
+			}
+			requireCondition(pairs.size === 4, "碰撞分片水平投影必須保持原矩形格區");
+			for (const heights of pairs.values()) {
+				requireCondition(heights.length === 2, "每個水平角點必須具上下表面");
+				near(Math.abs(heights[1] - heights[0]), api.config.thickness, "翹曲不得改變垂直材料厚度");
+			}
+			const minimumX = Math.min(...vertices.map((vertex) => vertex.x)), minimumZ = Math.min(...vertices.map((vertex) => vertex.z));
+			const width = (Math.max(...vertices.map((vertex) => vertex.x)) - minimumX) / model.step, height = (Math.max(...vertices.map((vertex) => vertex.z)) - minimumZ) / model.step;
+			rectangles.push({ /* row、col：世界角點还原的起始格；width、height：真正凸片水平投影的佔據格數。 */ row: (minimumZ + model.cz + api.config.size / 2) / model.step, col: (minimumX + model.cx + api.config.size / 2) / model.step, width, height });
 		}
 		for (const rectangle of rectangles) {
 			for (const key of ["row", "col", "width", "height"]) {
@@ -173,6 +189,9 @@ async function runChecks() {
 		body.angularVelocity.set(0, 0, 0);
 		body.updateInertiaWorld(true);
 		body.aabbNeedsUpdate = true;
+		body.updateAABB();
+		body.position.y += 0.003 - body.aabb.lowerBound.y;
+		body.aabbNeedsUpdate = true;
 		body.wakeUp();
 		return body;
 	}
@@ -180,6 +199,9 @@ async function runChecks() {
 	function backface(coin) {
 		coin.body.quaternion.setFromEuler(Math.PI, -coin.model.angle, 0);
 		coin.body.updateInertiaWorld(true);
+		coin.body.aabbNeedsUpdate = true;
+		coin.body.updateAABB();
+		coin.body.position.y += 0.003 - coin.body.aabb.lowerBound.y;
 		coin.body.aabbNeedsUpdate = true;
 	}
 
@@ -716,6 +738,89 @@ async function runChecks() {
 		requireCondition(spins[0].distanceTo(spins[1]) > 0.1, "相同覆蓋率但分布不同的字形必須有不同空中角速回應");
 	}
 
+	async function curvedGeometryCheck() {
+		const models = [[1, 1], [1, 8], [8, 1], [16, 16]].map((dimensions) => api.balanceGameModel(sampleRawRectangle(...dimensions)));
+		models.push(api.balanceGameModel(api.sampleGlyph("我", "sans-serif")));
+		for (const raw of models) {
+			const original = JSON.stringify(raw), curved = api.curveGameModel(raw);
+			let momentY = 0, productXY = 0, productZY = 0, verticalMoment = 0;
+			for (const cell of curved.cells) {
+				const point = api.localPoint(cell, curved);
+				requireCondition(Number.isFinite(cell.lift), "單格與单列曲率不可除零或產生無效高度");
+				near(cell.lift, api.glyphSurfaceHeight(curved, point.x, point.z), "質量取樣與可見／碰撞曲面必須使用同一高度場");
+				momentY += cell.mass * cell.lift;
+				productXY += cell.mass * point.x * cell.lift;
+				productZY += cell.mass * point.z * cell.lift;
+				verticalMoment += cell.mass * cell.lift ** 2;
+			}
+			near(momentY, 0, "翹曲質點的垂直重心必須保持零");
+			near(productXY, 0, "翹曲後 xy 交叉慣量必須保持零");
+			near(productZY, 0, "翹曲後 zy 交叉慣量必須保持零");
+			near(curved.mass, raw.mass, "翹曲不得增減原牌質量");
+			near(curved.inertia.x, raw.inertia.x + verticalMoment, "翹曲高度須真正增加 x 慣量");
+			near(curved.inertia.z, raw.inertia.z + verticalMoment, "翹曲高度須真正增加 z 慣量");
+			near(curved.inertia.y, raw.inertia.y, "垂直翹曲不得更改 y 慣量");
+			requireCondition(curved.curve.radiusSquared >= (api.config.size / 2) ** 2 && JSON.stringify(raw) === original, "曲率必須有字框尺度下限且不可污染原模型");
+			const body = api.makeGameBody(curved, api.game.aim.clone().set(0, floorHeight, 0));
+			assertBodyMask(body, curved);
+			for (let index = 0; index < body.shapes.length; index++) {
+				for (const vertex of shapeWorldVertices(body, index)) {
+					const point = body.quaternion.conjugate().vmult(vertex);
+					near(Math.abs(point.y - api.glyphSurfaceHeight(curved, point.x, point.z)), api.config.thickness / 2, "真正凸片角點必須落在同一翹曲上下表面");
+				}
+			}
+		}
+
+		// 完整字框的外緣必須比中心支撐高，不能只改曲率欄位而保持平板碰撞。
+		const curved = api.curveGameModel(models[3]), body = api.makeGameBody(curved, api.game.aim.clone().set(0, 0, 0));
+		const vertices = body.shapes.flatMap((shape, index) => shapeWorldVertices(body, index));
+		const lowest = Math.min(...vertices.map((point) => point.y));
+		const edgeBottom = Math.min(...vertices.filter((point) => Math.abs(point.x) > 1.29).map((point) => point.y));
+		requireCondition(edgeBottom - lowest > 0.05, "真正碰撞外緣下方必須具有可進入的空隙");
+		const mesh = api.makeGlyphMesh(curved), positions = mesh.geometry.getAttribute("position");
+		const topHeights = [];
+		for (let index = 0; index < positions.count; index++) {
+			const x = positions.getX(index), y = positions.getY(index), z = positions.getZ(index), surface = api.glyphSurfaceHeight(curved, x, z);
+			requireCondition(Math.abs(y - surface) <= api.config.thickness / 2 + 2e-6, "可見字形不得偏離對應的翹曲材料厚度");
+			if (Math.abs(y - surface - api.config.thickness / 2) < 2e-6) topHeights.push(y);
+		}
+		requireCondition(Math.max(...topHeights) - Math.min(...topHeights) > 0.05, "真正可見字形頂面必須非平面");
+		let covered = 0;
+		for (const group of mesh.geometry.groups) { near(group.start, covered, "曲面細分後材料群組不可跳過三角形"); covered += group.count; }
+		near(covered, positions.count, "曲面細分後所有可見三角形都必須有材料群組");
+		mesh.geometry.dispose();
+	}
+
+	async function curvedPryCheck() {
+		const results = [];
+		for (const curved of [false, true]) {
+			await newGame();
+			api.updateGameRestitution(0);
+			const target = owned(1)[0], attacker = owned(0)[0];
+			target.model = api.balanceGameModel(sampleRawRectangle(16, 16));
+			if (curved) target.model = api.curveGameModel(target.model);
+			attacker.model = api.balanceGameModel(sampleRawRectangle(1, 4));
+			place(target);
+			place(attacker, -1.5, 0.9);
+			for (const coin of [target, attacker]) coin.body.allowSleep = false;
+			step(120);
+			const initialHeight = target.body.position.y;
+			attacker.body.velocity.x = 3;
+			let contacts = 0, spin = 0, lift = 0;
+			const recordContact = (event) => { if (event.body === target.body) contacts++; };
+			attacker.body.addEventListener("collide", recordContact);
+			// ready 狀態停用遊戲助推；相同入射速度只比較真正形狀接觸的撬動回應。
+			for (let tick = 0; tick < 180; tick++) {
+				step(1);
+				spin = Math.max(spin, target.body.angularVelocity.length());
+				lift = Math.max(lift, target.body.position.y - initialHeight);
+			}
+			requireCondition(contacts > 0 && !target.assistUsed && target.owner === 1, "撬動比較必須是真碰撞，不能由助推或直接捕獲代替");
+			results.push({ /* spin、lift：同一幾何入射案例的最大角速和實際重心抬升。 */ spin, lift });
+		}
+		requireCondition(results[1].spin > results[0].spin * 3 && results[1].lift > results[0].lift + 0.002, "翹曲外緣必須比原平板產生明顯較強的實際撬動，不只改顯示形狀");
+	}
+
 	async function restitutionCheck() {
 		const floorSpeeds = [], pairSpeeds = [];
 		for (const restitution of [0, 0.9]) {
@@ -811,9 +916,15 @@ async function runChecks() {
 		place(lower);
 		backface(lower);
 		place(upper);
-		upper.body.position.y += api.config.thickness + 0.003;
+		lower.body.updateAABB();
+		upper.body.updateAABB();
+		upper.body.position.y += lower.body.aabb.upperBound.y - upper.body.aabb.lowerBound.y + 0.003;
+		upper.body.aabbNeedsUpdate = true;
 		for (const coin of [lower, upper, thrown]) coin.body.allowSleep = false;
-		step(360);
+		for (let tick = 0; tick < 1200; tick++) {
+			step(1);
+			if ([lower, upper, thrown].every(api.isGameCoinResting)) break;
+		}
 		for (const coin of [lower, upper, thrown]) {
 			requireCondition(api.isGameCoinResting(coin), "疊放 fixture 必須先由真實接觸穩定支撐");
 			coin.body.allowSleep = true;
@@ -866,6 +977,8 @@ async function runChecks() {
 	await check("高處真實邊界接觸保留薄片及所有權", highBoundaryCheck);
 	await check("安全出生保留能量、受阻拒絕不改原對局", spawnSafetyCheck);
 	await check("偏心握持及不同質量分布產生空中角運動", airborneSpinCheck);
+	await check("真曲面碰撞與視覺、孔洞、重心和慣量", curvedGeometryCheck);
+	await check("真實外緣碰撞：翹曲比平板更容易撬起", curvedPryCheck);
 	await check("反彈滑桿實際影響桌面及雙片碰撞", restitutionCheck);
 	await check("睡眠接觸省略後仍停止、移至空中快取失效", sleepingSupportCheck);
 	await check("睡眠疊放支撐、捕獲下層後喚醒與失效", supportedStackRemovalCheck);

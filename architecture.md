@@ -89,7 +89,9 @@ O/D 是使用者要求的互補遊戲配置，非新自然定律。發射上限�
 flowchart TD
 	Setup[startGame] --> Validate[六枚設定與字素驗證]
 	Validate --> Font[字體載入／後備字形]
-	Font --> Epoch{仍是同一世代}
+	Font --> Material[balanceGameModel：字形材質]
+	Material --> Curve[curveGameModel：翹曲與慣量]
+	Curve --> Epoch{仍是同一世代}
 	Epoch -->|是| Ready[ready：選幣與瞄準]
 	Epoch -->|否| Ignore[丟棄過期結果]
 	Ready --> Available[availableGameCoins：手上優先]
@@ -137,6 +139,9 @@ flowchart TD
 | `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
 | `flushGameContacts` | 每步求解完成後清空接觸佇列；沿真實接觸傳遞六枚命中關係，再以目前姿態還原力臂、處理一次助推。 |
 | `prepareGameThrow` | 保持共同能量／速度預算，預檢八個入射方向的實際出生包圍盒；排除牆及既有堆疊，拒絕時不改回合或拿走枚。 |
+| `curveGameModel`、`glyphSurfaceHeight` | 遊戲材質之後加入有界淺碗曲率，去質量均值及線性項，保留質點重心／主軸，加入高度分布的慣量；不修改原模型。 |
+| `addCurvedCollision` | 在原佔據矩形內分成最多3×3格的凸薄楔，角點遵循共同高度場，保留孔洞與厚度。 |
+| `curveGlyphGeometry`、內部 `vertex`／`split` | 保留原字形紋理，最長邊遞迴細分至0.2或深度上限，再套共同高度場、重算法線；材質群組覆蓋新頂點。 |
 | `updateGameRestitution` | 更新獨立字形／桌面接觸材質的彈性與滑桿，不改校準接觸材質。 |
 | `beginGameDrag`、`updateGameDrag` | 限真人準備回合的底部單指手勢；記錄起点、由距離設定力度、投影落點及 SVG 箭頭；非底部仍可點選瞄準。 |
 | `endGameDrag`、`cancelGameDrag` | 有效上拖放開才投擲；清除指標捕獲、手勢與箭頭，短拖／取消不出手。 |
@@ -210,6 +215,8 @@ flowchart TD
 | `assertPartition`、`assertBodyMask`、`mergedGeometryCheck` | 以獨立遮罩逐格驗合併區與實際方盒，不填洞、不遺漏、不重疊。 |
 | `gameEnergyCheck` | 真正出手的高度、平移與旋轉共用預算與速度／衝量上限。 |
 | `airborneSpinCheck`、`restitutionCheck` | 驗偏心握持力臂與主慣量的空中反應，以及滑桿對真實地面及雙片碰撞的反彈效果。 |
+| `curvedGeometryCheck`、`curvedPryCheck` | 驗翹曲質點重心、主慣量、碰撞與視覺共同高度場及完整材質群組；停用額外助推比較相同外緣真撞擊的撬動反應。 |
+| `shapeWorldVertices` | 讀取方盒／凸薄片的真角點並套用片段偏移及旋轉，供遮罩、厚度與曲面回歸使用。 |
 | `pointerUiCheck` | 以真實滑鼠拖曳驗箭頭、預測落點、短拖取消、放開投擲與電腦回合鎖定。 |
 | `recordGroundSupport`、`sleepingSupportCheck` | 以真正桌面接觸和產品自然休眠測試紀錄與空中失效。 |
 | `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
