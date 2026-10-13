@@ -103,8 +103,8 @@ flowchart TD
 	Queue --> Flush[postStep → flushGameContacts]
 	Flush --> Hit[handleGameContact：接觸鏈命中]
 	Hit --> Edge[applyGameEdgeAssist：有界一次助推]
-	Flush --> Shock[applyGroundImpact：首次落地共享範圍衝量]
-	Shock --> Chance{首次落地25%爆炸}
+	Flush --> Shock[applyGroundImpact：每次向下落地共享範圍衝量]
+	Shock --> Chance{每次落地25%爆炸}
 	Chance -->|普通| Ring[spawnGroundShockEffect：藍色擴散環]
 	Chance -->|爆炸| Blast[2.5倍範圍與較強有界衝量 → 橘色環及火花]
 	Sim --> Rest[isGameCoinResting]
@@ -132,9 +132,9 @@ flowchart TD
 | 函式 | 責任與回呼 |
 | --- | --- |
 | `getGameElement` | 以固定 ID 存取 DOM，使用者字形與名字只透過 textContent 顯示。 |
-| `bindGameControls` | 綁定開始、重開、回設定、仰角及底部拖曳回呼；不提供点击、按鈕或鍵盤投擲。 |
+| `bindGameControls` | 綁定開始、重開、回設定、仰角及外圍向內拖曳回呼；不提供点击、按鈕或鍵盤投擲。 |
 | `startGame` | 驗證六枚、建立輸入快照、字體／字形載入與 epoch 檢查、清理舊場景、建立對局；player map 回呼只建立安全名稱與色彩。 |
-| `setupGameBoard` | 建立非物理瞄準記號，重開時移除舊牆，地面保持無限。 |
+| `setupGameBoard` | 建立圓周64段小反彈擋邊、圓形邊線與瞄準記號；重開清理舊場景。 |
 | `clearGameBodies`、`removeGameBody` | 移除對局或單枚的剛體、幾何、材質、紋理與支撐紀錄。 |
 | `leaveGame` | 取消 CPU、隔離舊世代、清理對局並還原設定／物理测试容器。 |
 | `availableGameCoins` | filter 所有權與手上枚，實現手上優先。 |
@@ -145,12 +145,12 @@ flowchart TD
 | `throwGameCoin` | 保存本次攻擊者、拾起合法枚、喚醒其他枚、分配位能／平移／旋轉，開始真實模擬。 |
 | `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
 | `flushGameContacts` | 每步求解完成後清空接觸佇列；沿真實接觸傳遞六枚命中關係，再以目前姿態還原力臂、處理一次助推。 |
-| `applyGroundImpact` | 真實地面接觸在postStep觸發本手唯一震波，抽一次25%爆炸並記錄explosive；filter/map/reduce選三維範圍內枚、分配衰減預算並求最近筆畫，施加普通／爆炸的有界向外／向上衝量。 |
+| `applyGroundImpact` | 真實地面接觸在postStep觸發連續接地唯一震波，真離地後再啟用並重新抽25%爆炸並記錄explosive；filter/map/reduce選三維範圍內枚、分配衰減預算並求最近筆畫，施加普通／爆炸的有界向外／向上衝量。 |
 | `updateGameRestitution` | 在原solver.solve之前按真接觸相對法向速度選低速耗散，保持高速碰撞高彈性與材質/profile；不改停止門檻或校準世界。 |
 | `spawnGroundShockEffect` | 建立普通0.6秒藍色環或爆炸0.9秒橘色環及火花，範圍與真實衝擊一致，無物理形體。 |
 | `prepareGameThrow` | 保持共同能量／速度預算，預檢八個入射方向的實際出生包圍盒；排除牆及既有堆疊，拒絕時不改回合或拿走枚。 |
 | `glyphPhysicsProfile` | 由文字攻防導出能量、高度、彈性與摩擦；玩家不能調整這些係數，材質互撞採乘積。 |
-| `beginGameDrag`、`updateGameDrag` | 底部單指手勢累積路徑與事件時間，以戰場高度正規化甩速；另更新瞄準與落點箭頭。 |
+| `beginGameDrag`、`updateGameDrag` | 四周外圍單指手勢累積路徑與事件時間，以戰場高度正規化甩速；另更新瞄準與落點箭頭。 |
 | `endGameDrag`、`cancelGameDrag` | 有效上拖放開才投擲；清除指標捕獲、手勢與箭頭，短拖／取消不出手。 |
 | `applyGameEdgeAssist` | 在真实接觸力臂施加有動能增量上限的補充衝量，不指定結果。 |
 | `isGameCoinResting` | 分別檢查速度，BFS 真實支撐路徑，或驗證休眠快照；map 回呼記錄姿態證據。 |
@@ -159,14 +159,14 @@ flowchart TD
 | `finishGameTurn` | 正常等待或超時結算、快照多枚捕獲、維持身分回手、檢查6：0、換手與 AI 排程。 |
 | `planCpuTurn` | 對手穩定度排序，內部 `attackScore` 以受限能量和質量傳遞估計選攻方，求有誤差的邊緣目標，回傳實際出手計畫。 |
 | `scheduleCpuTurn` | 900ms 回呼驗 epoch／模式／玩家／狀態後，走同一投擲函式。 |
-| `pickGameAim` | 射線與無限桌面相交取得瞄準點；空中射線不變更目標。 |
+| `pickGameAim` | 射線與桌面相交取得瞄準點，限制半徑7.5m；手勢起點不限制入射方向。 |
 | `moveAimMarker` | 同步瞄準記號位置。 |
-| `fitBattleCamera` | 15°正交視角固定世界原點與同視窗下的縮放；僅以視窗比例計算投影，不跟隨任何薄片、落點或特效；無牆或位置夾限。 |
+| `fitBattleCamera` | 15°正交視角固定世界原點與同視窗下的縮放；僅以視窗比例計算投影，不跟隨任何薄片、落點或特效；圓周低擋邊不影響固定鏡頭。 |
 | `armGameTurnTimer`、`clearGameTurnTimer` | 成功投出啟動12秒原生回呼與Date.now截止，核對epoch／turn／thrownId；正常結算、重開、離開取消，低幀率不延長等待。 |
 | `swipeVelocityGain` | 將真實甩速轉為有界0.8～2倍率，無效值採最低倍率；電腦速度0.5對應1倍。 |
 | `stableGameFace` | 僅有真支撐且停止的枚回傳朝上面±1；側立、空中、移動及手中為0，供投出前基準與結算比較。 |
 | `spawnCaptureEffect`、`animateCaptureEffects` | 合法捕獲才建立金色環與碎光；0.8秒淡出擴散，無剛體、不影響結果。 |
-| `groundImpactLifecycleCheck`、`groundImpactBudgetCheck`、`captureEffects`（測試） | 驗真正首次落地、postStep時序、重彈與下手隔離、三維範圍衰減及實際總動能；篩選金色捕獲特效避免混淆藍色震波。 |
+| `groundImpactLifecycleCheck`、`groundImpactBudgetCheck`、`captureEffects`（測試） | 驗真落地、postStep時序、連續接地只一次與真離地後重新震波、三維範圍衰減及實際總動能；區分捕獲與衝擊特效。 |
 | `explosionBranchCheck`（測試） | 固定隨機輸入驗25%邊界、唯一抽選、普通與爆炸範圍／實際總動能、界外與己方捕獲隔離及特效清理。 |
 | `lowSpeedRestitutionCheck`、`settleGameBodies`（測試） | 真接觸驗低速耗散與高速高彈性，材質保持；有限真步進等待自然停妥，保留原停止與捕獲門檻。 |
 | `fixedCameraCheck`、內部 `snapshotCamera`、`cameraResizeCheck`（測試） | 真投擲、震波、爆炸、散開及結算比較完整相機矩陣；真視窗變更只改投影，中心與15°方向不變。 |
@@ -240,7 +240,7 @@ flowchart TD
 | `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
 | `sampleRawRectangle`、內部 `knownImage`、`normalizedBalanceCheck` | 解析覆蓋率階段驗重量、完整投擲能量、幾何與重心保持，以及不污染校準模型。 |
 | `kineticEnergy`、`gameEdgeEnergyCheck` | 以世界慣量計算真正動能增量，驗攻方份額、一次助推、衝量上限且不直接改姿態／權屬。 |
-| `deferredContactCheck`、`infiniteBattlefieldCheck` | 驗接觸求解後一般助推、動能上限與佇列隔離；無牆、遠距出生及真實越過舊邊界不被阻擋。 |
+| `deferredContactCheck`、`circularBattlefieldCheck` | 驗接觸求解後一般助推、動能上限與佇列隔離；圓周真碰撞小反彈、低擋邊允許高飛片跨過。 |
 | `relativeFaceCheck`、`missingFaceBaselineCheck` | 驗正↔背雙向相對翻面與特效；同面旋轉及初始空中／移動／側立沒有基準，不能捕獲。 |
 | `spawnSafetyCheck` | 驗成功出生的完整形狀在牆內且不重疊，能量不變；手中及桌面枚全阻塞拒絕時不改原對局。 |
 
@@ -281,3 +281,30 @@ flowchart TD
 物理公式與必要預期由 GPT-6 Astra 蒸餾並定義，記錄於 [physics-distillation.md](docs/physics-distillation.md)。三個屬性是同一物理模型的描述，不另行乘上攻防或成功率係數。
 
 網頁需網路載入 Three.js、cannon-es 及 Noto 字體。標楷體和 emoji 外觀依裝置，取樣、紋理與物理同步使用實際顯示字形。低解析碰撞與高解析顯示輪廓之間有近似誤差；攻守配置有取捨，但不宣稱所有 Unicode 字形與配對勝率已相同。第一版不含 LAN 或 3～8 人對戰。
+
+## 圓形場地、覆蓋與音訊
+
+```mermaid
+flowchart TD
+	Pointer[外圍pointerdown] --> Point[gamePointerPoint：世界起點]
+	Point --> Inward[inwardDragDistance：朝中心至少12px]
+	Inward --> Direction[throwDirection：起點到瞄準點]
+	Direction --> Throw[prepareGameThrow：真实入射速度]
+	Contact[真collide] --> Sound[playCollisionSound：配對80ms限流]
+	Contact --> Cover[gameCoverProfile：近邊兩格與alpha投影覆蓋]
+	Cover --> Assist[applyGameEdgeAssist：覆蓋互補有界衝量]
+	Post[postStep] --> Air{真離地超過3cm}
+	Air --> Rearm[重新啟用groundImpactUsed]
+	Rearm --> Land[下一次向下落地與爆炸抽選]
+```
+
+| 函式／結構 | 責任 |
+| --- | --- |
+| `gamePointerPoint`、`inwardDragDistance` | 桌面射線世界座標與向中心的有向手勢位移；中央與向外手勢不能投擲。 |
+| `gameCoverProfile` | 原字框邊緣內側兩格、真姿態XZ投影的alpha加權覆蓋；回nearEdge／coverage／strength／gain。 |
+| `collisionAudio` | gesture建立context與重用noise；lastHits配對→播放時間；playCount只記成功排程。 |
+| `unlockGameAudio`、`playCollisionSound` | 真手勢啟動音訊，真接觸短音按強度設有界音量／音高，配對80ms防多格重響；播放完釋放節點。 |
+| `perimeterDragCheck`（測試） | 四邊真滑鼠向內投擲及實際世界速度方向，拒絕中央、向外與短拖。 |
+| `coveragePressureCheck`、`collisionAudioCheck`、`graphemeAndFacesCheck`（測試） | 解析覆蓋／近邊內側與實際衝量、己方免捕獲；音訊啟動／強度／配對限流；單字素／組合emoji與彩色雙面材質。 |
+
+圓周材質反彈0.15與薄片相乘，低速耗散只降低、不提高擋邊係數。低擋邊允許高拋跨過；無出界奪取。正反面共用字形紋理，背面冷色調区分，emoji原色仍可辨識。

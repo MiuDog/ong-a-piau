@@ -53,8 +53,8 @@
 			.battle-controls #game-log { grid-column: 1 / -1; max-height: 100px; overflow: auto; }
 			@media (max-width: 800px) { .battle-controls { grid-template-columns: 1fr; } }
 			.match-layout > div { min-width: 0; }
-			#game-board { position: relative; height: 60vh; min-height: 340px; overflow: hidden; touch-action: none; cursor: crosshair; }
-			.launch-zone { position: absolute; bottom: 0; left: 0; right: 0; height: 25%; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; background: linear-gradient(transparent, #247a9520); color: #256979; pointer-events: none; }
+			#game-board { position: relative; width: min(100%, 80vh); height: min(100vw, 80vh); margin: auto; overflow: hidden; touch-action: none; cursor: crosshair; }
+			.launch-zone { position: absolute; bottom: 0; left: 0; right: 0; height: 100%; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; background: radial-gradient(circle, transparent 64%, #247a9518 65%, #247a9518 100%); color: #256979; pointer-events: none; }
 			#throw-preview { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 			.scoreboard { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
 			.score { background: #fff; border: 1px solid #dce2e7; border-radius: 8px; padding: 12px; }
@@ -71,7 +71,7 @@
 			#winner { padding: 12px; margin: 12px 0; border: 1px solid #8bbca8; border-radius: 8px; background: #edf8f1; }
 			footer { margin-top: 20px; font-size: 13px; color: #52616d; }
 			@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } .stats { grid-template-columns: 1fr; } #scene { height: 350px; } main { padding: 14px; } #glyph { max-width: 260px; } }
-			@media (max-width: 800px) { .player-grid, .match-layout { grid-template-columns: 1fr; } #game-board { height: 330px; } #coin-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } .coin-choice { flex-direction: column; text-align: center; gap: 4px; } }
+			@media (max-width: 800px) { .player-grid, .match-layout { grid-template-columns: 1fr; } #coin-list { grid-template-columns: repeat(3, minmax(0, 1fr)); } .coin-choice { flex-direction: column; text-align: center; gap: 4px; } }
 		</style>
 	</head>
 	<body>
@@ -90,7 +90,7 @@
 						<h2 class="player-heading">玩家一</h2>
 						<label for="p1-name">名稱</label><input id="p1-name" type="text" value="玩家一" maxlength="20">
 						<label for="p1-font">三枚的字體</label><select id="p1-font"><option value="Noto Sans TC">黑體</option><option value="Noto Serif TC">明體</option><option value="DFKai-SB">標楷體（裝置字體）</option></select>
-						<p>每枚可輸入 1～4 個文字或 emoji</p>
+						<p>每枚只能輸入一個文字或 emoji（組合 emoji 算一個）</p>
 						<div class="coin-inputs"><input id="p1-text-0" aria-label="玩家一第一枚" value="我" maxlength="64"><input id="p1-text-1" aria-label="玩家一第二枚" value="⚡" maxlength="64"><input id="p1-text-2" aria-label="玩家一第三枚" value="一" maxlength="64"></div>
 					</section>
 					<section class="panel player-1">
@@ -103,12 +103,12 @@
 				</div>
 				<div class="actions"><button id="start-game" class="primary" disabled>開始對戰</button><button id="open-lab" hidden>字形物理測試</button></div>
 				<p id="setup-status" role="status" aria-live="polite">正在載入 3D 與物理引擎…</p>
-				<details><summary>怎麼玩？</summary><p>雙方各三枚，輪流投一次。手上有幣就先用手上的，手上沒幣才拿起桌上自己的幣。只能從底部拖曳瞄準，選擇投擲仰角後放開投擲；滑動越快，投得越快；其他物性由文字決定。被命中的對手薄片落地停止後，朝上面與受擊前相反，就收回你的手上再使用；彈起但朝上面沒有改變不算。自己的薄片不會被自己淘汰。取得全部六枚才獲勝。</p><p>筆畫密集偏防守，稀疏偏進攻；邊緣小面積命中有撬起加成；碰撞會強力反彈，首次落地有25%機率爆炸擊飛周圍薄片。外觀保留原字形，側邊藍／橘色顯示目前主人。</p></details>
+				<details><summary>怎麼玩？</summary><p>雙方各三枚，輪流投一次。手上有幣就先用手上的，手上沒幣才拿起桌上自己的幣。從四周外圍往內拖曳瞄準，選擇投擲仰角後放開投擲；滑動越快，投得越快；其他物性由文字決定。被命中的對手薄片落地停止後，朝上面與受擊前相反，就收回你的手上再使用；彈起但朝上面沒有改變不算。自己的薄片不會被自己淘汰。取得全部六枚才獲勝。</p><p>筆畫密集偏防守，稀疏偏進攻；邊緣小面積命中有撬起加成；碰撞會強力反彈，每次向下落地有25%機率爆炸擊飛周圍薄片。外觀保留原字形，側邊藍／橘色顯示目前主人。</p></details>
 			</section>
 			<section id="match" hidden>
 				<div class="scoreboard"><div id="score-0" class="score player-0"></div><div id="score-1" class="score player-1"></div></div>
 				<div class="match-layout">
-					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從底部往上拖曳，放開投擲"><div class="launch-zone">從底部往上拖曳，快滑快投</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">底部拖曳：滑越快，投得越快。箭頭指向預計落點；首次落地震動附近薄片，25%機率大範圍爆炸。穩定落地後朝上面與受擊前相反才被奪取。</p></div>
+					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從外圍往內拖曳，放開投擲"><div class="launch-zone">從四周往內拖曳，快滑快投</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">外圍拖曳：滑越快，投得越快。箭頭指向預計落點；每次向下落地震動附近薄片，25%機率大範圍爆炸。穩定落地後朝上面與受擊前相反才被奪取。</p></div>
 					<aside class="panel battle-controls">
 						<div><h2 id="turn-label"></h2><p id="match-status" role="status" aria-live="polite"></p><div id="winner" hidden></div></div>
 						<div><div id="coin-list"></div><p id="selected-stats" class="legend"></p></div>
@@ -182,15 +182,20 @@
 				 * selectedId、thrownId：選中與本次投出枚；aim：桌面瞄準座標；angleDegrees：唯一可調的投擲仰角。
 				 * turn、elapsed、quiet：回合與靜止時間；epoch：隔離舊非同步與計時器。
 				 * cpuTimer：目前 AI 計時器；turnTimer、turnDeadline：獨立回合逾時計時器及真實時間截止，避免低幀率卡手；players：名稱與顏色。
-				 * walls：保留清理舊牆的空集合；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。
+				 * walls：圓周64段低反彈擋邊；boundaryMesh：圓形地面與邊線；throwDirection：手勢在世界XZ的入射方向，電腦為null；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。
 				 * contacts：本步真實接觸及局部力臂，求解結束後才施加遊戲助推。
 				 * floorMaterial：遊戲地面材質；effects：純視覺捕獲及落地衝擊特效，不參與物理與勝負。
-				 * drag：目前手勢及預測落點；swipeSpeed：手勢速度；groundImpactUsed：本手只產生一次落地震波。
+				 * drag：目前手勢及預測落點；swipeSpeed：手勢速度；groundImpactUsed：一次連續接地只產生一波，真離地再啟用。
 				 * lastGroundImpact：震波範圍、能量及受影響枚，供背景驗證，不參與判面。 */
 				active: false, mode: "cpu", current: 0, thrower: 0, status: "setup", winner: null, coins: [],
 				selectedId: null, thrownId: null, aim: null, angleDegrees: 35, turn: 1, elapsed: 0, quiet: 0,
-				epoch: 0, cpuTimer: null, turnTimer: null, turnDeadline: 0, players: [], walls: [], aimMesh: null, log: [], contacts: [], floorMaterial: null, drag: null, effects: [], swipeSpeed: 0.5, groundImpactUsed: false, lastGroundImpact: null
+				epoch: 0, cpuTimer: null, turnTimer: null, turnDeadline: 0, players: [], walls: [], boundaryMesh: null, aimMesh: null, throwDirection: null, log: [], contacts: [], floorMaterial: null, drag: null, effects: [], swipeSpeed: 0.5, groundImpactUsed: false, lastGroundImpact: null
 			};
+			const collisionAudio = {
+				/* context：手勢啟用的音訊環境；noise：重用短撞擊噪音；lastHits：body配對→播放時間，抑制多像素重響；playCount：實際播放數供驗證。 */
+				context: null, noise: null, lastHits: new Map(), playCount: 0
+			};
+
 			boot();
 
 			async function boot() {
@@ -262,8 +267,8 @@
 				const text = elements.text.value.trim();
 				// 以完整字素辨識 emoji，防止把膚色或連接序列拆成多個字。
 				const count = [...new Intl.Segmenter("zh-Hant", { /* granularity：使用者看見的一個字形為一單位。 */ granularity: "grapheme" }).segment(text)].length;
-				if (count < 1 || count > 4) {
-					elements.status.textContent = "請輸入 1～4 個文字或 emoji。";
+				if (count !== 1) {
+					elements.status.textContent = "請輸入一個文字或 emoji。";
 					return;
 				}
 
@@ -505,7 +510,7 @@
 				const texture = new THREE.CanvasTexture(model.canvas);
 				texture.colorSpace = THREE.SRGBColorSpace;
 				const top = new THREE.MeshStandardMaterial({ /* map：原始文字與 emoji 色彩；alphaTest：裁掉抗鋸齒透明邊。 */ map: texture, alphaTest: 0.1 });
-				const bottom = new THREE.MeshStandardMaterial({ /* color：翻面後可辨識的背面色。 */ color: 0xd0d3da });
+				const bottom = new THREE.MeshStandardMaterial({ /* map：背面保留文字／emoji的完整顏色；color：冷色調區分正反面；alphaTest：同正面裁透明邊。 */ map: texture, color: 0x98c4df, alphaTest: 0.1 });
 				const side = new THREE.MeshStandardMaterial({ /* color：擠出的筆畫側面。 */ color: 0x43839d });
 				return new THREE.Mesh(geometry, [top, bottom, side]);
 			}
@@ -843,7 +848,7 @@
 
 				// 固定世界中心與視野，不因投擲、爆炸或散開的薄片平移／縮放。
 				const board = getGameElement("game-board"), aspect = Math.max(1, board.clientWidth) / Math.max(1, board.clientHeight);
-				const halfZ = Math.max(7, 9 / aspect), halfX = halfZ * aspect;
+				const halfZ = 10.2, halfX = halfZ * aspect;
 				state.camera.left = -halfX;
 				state.camera.right = halfX;
 				state.camera.top = halfZ;
@@ -851,6 +856,44 @@
 				state.camera.position.set(0, 40, 40 * Math.tan(Math.PI / 12));
 				state.camera.lookAt(0, 0, 0);
 				state.camera.updateProjectionMatrix();
+				state.camera.updateMatrixWorld(true);
+			}
+
+			function unlockGameAudio() {
+				try {
+					const Audio = window.AudioContext || window.webkitAudioContext;
+					if (!Audio) return;
+					if (!collisionAudio.context) {
+						collisionAudio.context = new Audio();
+						const buffer = collisionAudio.context.createBuffer(1, Math.floor(collisionAudio.context.sampleRate * 0.08), collisionAudio.context.sampleRate), data = buffer.getChannelData(0);
+						for (let i = 0; i < data.length; i++) data[i] = Math.sin(i * 12.9898) * Math.cos(i * 4.1414);
+						collisionAudio.noise = buffer;
+					}
+					collisionAudio.context.resume().catch(() => {});
+				}
+				catch { /* 音訊被瀏覽器停用時仍可正常玩，不影響回合。 */ }
+			}
+
+			function playCollisionSound(body, other, impact) {
+				const context = collisionAudio.context, strength = Math.abs(Number(impact) || 0);
+				if (!game.active || context?.state !== "running" || strength < 0.4) return false;
+
+				// 同一配對80ms內只響一次，音量有上限，不為每個碰撞像素建立聲音。
+				const now = context.currentTime, key = [body.id, other.id].sort((a, b) => a - b).join(":");
+				if (now - (collisionAudio.lastHits.get(key) ?? -Infinity) < 0.08) return false;
+				collisionAudio.lastHits.set(key, now);
+				const gain = context.createGain(), tone = context.createOscillator(), noise = context.createBufferSource();
+				gain.gain.setValueAtTime(Math.min(0.12, 0.025 + strength * 0.008), now);
+				gain.gain.exponentialRampToValueAtTime(0.001, now + 0.08);
+				tone.type = "triangle";
+				tone.frequency.setValueAtTime(480 + Math.min(10, strength) * 50, now);
+				tone.frequency.exponentialRampToValueAtTime(160, now + 0.08);
+				noise.buffer = collisionAudio.noise;
+				tone.connect(gain); noise.connect(gain); gain.connect(context.destination);
+				tone.onended = () => { tone.disconnect(); noise.disconnect(); gain.disconnect(); };
+				tone.start(now); noise.start(now); tone.stop(now + 0.08); noise.stop(now + 0.08);
+				collisionAudio.playCount++;
+				return true;
 			}
 
 			function getGameElement(id) {
@@ -859,8 +902,8 @@
 			}
 
 			function bindGameControls() {
-				getGameElement("start-game").addEventListener("click", startGame);
-				getGameElement("restart-game").addEventListener("click", startGame);
+				getGameElement("start-game").addEventListener("click", () => { unlockGameAudio(); startGame(); });
+				getGameElement("restart-game").addEventListener("click", () => { unlockGameAudio(); startGame(); });
 				getGameElement("back-setup").addEventListener("click", leaveGame);
 				getGameElement("game-board").addEventListener("pointerdown", beginGameDrag);
 				getGameElement("game-board").addEventListener("pointermove", updateGameDrag);
@@ -890,7 +933,7 @@
 						for (let index = 0; index < 3; index++) {
 							const text = getGameElement(`p${owner + 1}-text-${index}`).value.trim();
 							const count = [...new Intl.Segmenter("zh-Hant", { /* granularity：保留組合 emoji 的完整字素。 */ granularity: "grapheme" }).segment(text)].length;
-							if (count < 1 || count > 4) throw new Error(`玩家${owner + 1}第${index + 1}枚請輸入 1～4 個字形`);
+							if (count !== 1) throw new Error(`玩家${owner + 1}第${index + 1}枚只能輸入一個文字或 emoji`);
 
 							descriptors.push({ /* id：本局永久身分；owner：目前主人；text、font：原始字形設定。 */ id: owner * 3 + index, owner, text, font: getGameElement(`p${owner + 1}-font`).value });
 						}
@@ -956,6 +999,7 @@
 					game.log = [];
 					game.angleDegrees = Number(getGameElement("game-angle").value) || 35;
 					game.swipeSpeed = 0.5;
+					game.throwDirection = null;
 					game.groundImpactUsed = false;
 					game.lastGroundImpact = null;
 					game.aim = new THREE.Vector3(-2.7, 0, 1.4);
@@ -967,7 +1011,7 @@
 					state.camera.up.set(0, 0, -1);
 					document.body.classList.add("playing");
 					resize();
-					updateGameUI("第一手先放自己的薄片。選幣，從桌面底部往上拖曳，放開投擲。");
+					updateGameUI("第一手先放自己的薄片。選幣，從桌面外圍往內拖曳，放開投擲。");
 					return true;
 				}
 				catch (error) {
@@ -985,6 +1029,21 @@
 				state.floor.material = game.floorMaterial;
 				for (const wall of game.walls) state.world.removeBody(wall);
 				game.walls = [];
+				if (game.boundaryMesh) clearBody(null, game.boundaryMesh);
+				const rimMaterial = new CANNON.Material({ /* restitution、friction：低擋邊小反彈，與薄片材質取乘積。 */ restitution: 0.15, friction: 0.4 });
+				for (let i = 0; i < 64; i++) {
+					const angle = i * Math.PI * 2 / 64;
+					const wall = new CANNON.Body({ /* mass：固定圓周；material：小反彈；shape：64段切線擋邊，半徑9m、高1.2m。 */ mass: 0, material: rimMaterial, shape: new CANNON.Box(new CANNON.Vec3(0.06, 0.6, 9 * Math.tan(Math.PI / 64) + 0.01)) });
+					wall.position.set(9 * Math.cos(angle), 0.6, 9 * Math.sin(angle));
+					wall.quaternion.setFromEuler(0, -angle, 0);
+					state.world.addBody(wall);
+					game.walls.push(wall);
+				}
+				game.boundaryMesh = new THREE.Mesh(new THREE.RingGeometry(8.92, 9.08, 96), new THREE.MeshBasicMaterial({ /* color、side：圓形場地邊線，正反皆可見；無額外物理。 */ color: 0x6796a1, side: THREE.DoubleSide }));
+				game.boundaryMesh.rotation.x = -Math.PI / 2;
+				game.boundaryMesh.position.y = 0.015;
+				state.scene.add(game.boundaryMesh);
+				collisionAudio.lastHits.clear();
 				if (game.aimMesh) clearBody(null, game.aimMesh);
 				game.aimMesh = new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.025, 8, 32), new THREE.MeshBasicMaterial({ /* color：瞄準標記，非實體碰撞。 */ color: 0x256979 }));
 				game.aimMesh.rotation.x = Math.PI / 2;
@@ -1014,6 +1073,9 @@
 				clearGameBodies();
 				for (const wall of game.walls) state.world.removeBody(wall);
 				game.walls = [];
+				if (game.boundaryMesh) clearBody(null, game.boundaryMesh);
+				game.boundaryMesh = null;
+				collisionAudio.lastHits.clear();
 				if (game.aimMesh) clearBody(null, game.aimMesh);
 				game.aimMesh = null;
 				game.active = false;
@@ -1064,12 +1126,14 @@
 				body.updateInertiaWorld(true);
 				body.updateSolveMassProperties();
 				body.addEventListener("collide", (event) => {
-					if (!game.active || game.status !== "simulating") return;
+					if (!game.active) return;
+					playCollisionSound(body, event.body, event.contact.getImpactVelocityAlongNormal());
+					if (game.status !== "simulating") return;
 
 					const contact = event.contact, offset = contact.bi === body ? contact.ri : contact.rj;
 					game.contacts.push({
-						/* body、other：真接觸雙方；point：局部力臂；impact：求解前法向速度；groundPoint：當下真接觸世界位置。 */
-						body, other: event.body, point: body.quaternion.conjugate().vmult(offset), impact: contact.getImpactVelocityAlongNormal(), groundPoint: body.position.vadd(offset)
+						/* body、other：真接觸雙方；point：局部力臂；impact：求解前法向速度；groundPoint：當下真接觸世界位置；descending：求解前是否向下移動。 */
+						body, other: event.body, point: body.quaternion.conjugate().vmult(offset), impact: contact.getImpactVelocityAlongNormal(), groundPoint: body.position.vadd(offset), descending: body.velocity.y < -0.05
 					});
 				});
 				body.addEventListener("sleep", () => {
@@ -1207,7 +1271,7 @@
 				const vertical = velocity * Math.sin(pitch), horizontal = velocity * Math.cos(pitch);
 				const flightTime = (Math.sqrt(vertical * vertical + 2 * config.gravity * height) + vertical) / config.gravity;
 				const direction = game.mode === "cpu" && game.current === 1 ? -1 : 1;
-				const initialAngle = Math.atan2(-direction * 0.8, direction * 0.6);
+				const initialAngle = game.throwDirection ? Math.atan2(game.throwDirection.z, game.throwDirection.x) : Math.atan2(-direction * 0.8, direction * 0.6);
 				for (let attempt = 0; attempt < 8; attempt++) {
 					const angle = initialAngle + attempt * Math.PI / 4;
 					const vx = horizontal * Math.cos(angle), vz = horizontal * Math.sin(angle);
@@ -1256,6 +1320,13 @@
 						body: entry.other, contact: { bi: entry.body, ri: offset, getImpactVelocityAlongNormal: () => entry.impact }
 					});
 				}
+				// 真離地至少3cm才重新啟用，持續接地及多像素同落地不可重抽。
+				const source = game.coins.find((coin) => coin.id === game.thrownId && coin.body);
+				if (source) {
+					source.body.updateAABB();
+					const supported = state.world.contacts.some((contact) => (contact.bi === source.body && contact.bj === state.floor) || (contact.bj === source.body && contact.bi === state.floor));
+					if (!supported && source.body.aabb.lowerBound.y > 0.03) game.groundImpactUsed = false;
+				}
 				for (const entry of contacts) applyGroundImpact(entry);
 			}
 
@@ -1267,7 +1338,7 @@
 					const ownA = game.coins.some((coin) => coin.body === contact.bi), ownB = game.coins.some((coin) => coin.body === contact.bj);
 					if ((!ownA && !ownB) || Math.abs(contact.getImpactVelocityAlongNormal()) >= 0.5) continue;
 
-					contact.restitution = ownA && ownB ? 0.22 * 0.22 : 0.22;
+					contact.restitution = Math.min(contact.restitution, ownA && ownB ? 0.22 * 0.22 : 0.22);
 				}
 			}
 
@@ -1276,9 +1347,9 @@
 
 				const source = game.coins.find((coin) => coin.id === game.thrownId && coin.body === entry.body);
 				const impact = Math.abs(Number(entry.impact) || 0);
-				if (!source || impact < 0.2 || !entry.groundPoint) return false;
+				if (!source || impact < 0.2 || !entry.groundPoint || entry.descending === false) return false;
 
-				// 步驟 1：僅首次真落地抽一次爆炸，共享預算隨向地面衝擊速度及字形進攻配置變化。
+				// 步驟 1：每次向下真落地抽一次爆炸，共享預算隨向地面衝擊速度及字形進攻配置變化。
 				game.groundImpactUsed = true;
 				const origin = entry.groundPoint.clone();
 				origin.y = 0.03;
@@ -1325,7 +1396,7 @@
 				}
 
 				// 步驟 3：普通藍色／爆炸橘色衝擊環只呈現震波，不帶剛體、不直接決定翻面。
-				game.lastGroundImpact = { /* sourceId、origin、radius、impact：真落地震源；explosive：本手唯一抽選結果；energyBudget：共享總上限；affected：真正受力資料。 */ sourceId: source.id, origin, radius, impact, explosive, energyBudget, affected };
+				game.lastGroundImpact = { /* sourceId、origin、radius、impact：真落地震源；explosive：本次落地抽選結果；energyBudget：共享總上限；affected：真正受力資料。 */ sourceId: source.id, origin, radius, impact, explosive, energyBudget, affected };
 				spawnGroundShockEffect(origin, radius, explosive);
 				fitBattleCamera();
 				return true;
@@ -1339,27 +1410,63 @@
 				if (!coin || !other || (!other.hit && other.id !== game.thrownId)) return;
 
 				coin.hit = true;
-				if (coin.owner === game.thrower || coin.assistUsed) return;
+				if (coin.assistUsed) return;
 
-				const assist = applyGameEdgeAssist(coin, event.contact);
+				const assist = applyGameEdgeAssist(coin, event.contact, other);
 				if (assist) coin.assistUsed = true;
 			}
 
-			function applyGameEdgeAssist(coin, contact) {
+			function gameCoverProfile(coin, other, point) {
+				// 步驟 1：主軸接觸點轉回字框，包含筆畫邊緣內側兩格的受壓區。
+				const model = coin.model, rotation = new CANNON.Quaternion();
+				rotation.setFromEuler(0, -model.angle, 0);
+				const raw = rotation.vmult(point), x = raw.x + model.cx, z = raw.z + model.cz;
+				const occupied = new Set(model.cells.map((cell) => `${cell.row},${cell.col}`));
+				const boundary = model.cells.filter((cell) => [[-1, 0], [1, 0], [0, -1], [0, 1]].some(([dr, dc]) => !occupied.has(`${cell.row + dr},${cell.col + dc}`)));
+				const distance = boundary.reduce((best, cell) => Math.min(best, Math.hypot(cell.x - x, cell.z - z)), Infinity);
+				const nearEdge = distance <= model.step * 2 + 1e-9;
+				const proximity = Math.max(0, 1 - distance / (model.step * 2.5));
+
+				// 步驟 2：以真剛體XZ投影將受擊像素映到蓋住它的字形，alpha加權計算覆蓋。
+				let covered = 0;
+				const area = model.cells.reduce((sum, cell) => sum + cell.alpha, 0);
+				if (other?.body) {
+					const axisX = other.body.quaternion.vmult(new CANNON.Vec3(1, 0, 0)), axisZ = other.body.quaternion.vmult(new CANNON.Vec3(0, 0, 1));
+					const det = axisX.x * axisZ.z - axisX.z * axisZ.x;
+					const map = new Map(other.model.cells.map((cell) => [`${cell.row},${cell.col}`, cell.alpha]));
+					const otherRotation = new CANNON.Quaternion();
+					otherRotation.setFromEuler(0, -other.model.angle, 0);
+					if (Math.abs(det) > 1e-5) {
+						for (const cell of model.cells) {
+							const world = coin.body.pointToWorldFrame(localPoint(cell, model));
+							const dx = world.x - other.body.position.x, dz = world.z - other.body.position.z;
+							const local = new CANNON.Vec3((dx * axisZ.z - dz * axisZ.x) / det, 0, (dz * axisX.x - dx * axisX.z) / det);
+							const projected = otherRotation.vmult(local);
+							const row = Math.floor((projected.z + other.model.cz + config.size / 2) / other.model.step), col = Math.floor((projected.x + other.model.cx + config.size / 2) / other.model.step);
+							covered += cell.alpha * (map.get(`${row},${col}`) || 0);
+						}
+					}
+				}
+				const coverage = Math.max(0, Math.min(1, covered / area));
+				const strength = nearEdge ? proximity * (0.08 + 0.92 * (1 - coverage)) : 0;
+				return { /* nearEdge：邊緣及兩格內側；coverage：alpha加權覆蓋率；strength：近邊程度與覆蓋互補；gain：有界力臂助推倍率。 */ nearEdge, coverage, strength, gain: 1 + 2 * strength };
+			}
+
+			function applyGameEdgeAssist(coin, contact, other) {
 				const body = coin.body;
 				const offset = contact.bi === body ? contact.ri : contact.rj;
 				const inverseRotation = body.quaternion.conjugate();
 				const point = inverseRotation.vmult(offset);
-				const profile = edgeProfile(coin.model, point);
+				const profile = gameCoverProfile(coin, other, point);
 				const impact = Math.abs(contact.getImpactVelocityAlongNormal());
-				if (!profile.edge || impact < 0.2) return false;
+				if (!profile.nearEdge || impact < 0.2) return false;
 
 				const torque = point.cross(inverseRotation.vmult(new CANNON.Vec3(0, 1, 0)));
 				const angular = inverseRotation.vmult(body.angularVelocity);
 				const k = 1 / body.mass + torque.x ** 2 * body.invInertia.x + torque.y ** 2 * body.invInertia.y + torque.z ** 2 * body.invInertia.z;
 				const b = body.velocity.y + angular.dot(torque);
 				const attacker = game.coins.find((item) => item.id === game.thrownId);
-				const extraEnergy = 1.2 * balanceProfile(attacker?.model).offense / 0.75;
+				const extraEnergy = 1.2 * balanceProfile(attacker?.model).offense / 0.75 * profile.strength;
 				const cap = (-b + Math.sqrt(b * b + 2 * k * extraEnergy)) / k;
 				const previousImpulse = Math.min(0.8, cap, 0.8 * body.mass * impact * (profile.gain - 1));
 				const impulse = 2 * previousImpulse;
@@ -1521,6 +1628,7 @@
 					game.aim.copy(plan.aim);
 					game.angleDegrees = plan.angleDegrees;
 					game.swipeSpeed = 0.5;
+					game.throwDirection = null;
 					if (throwGameCoin()) return;
 
 					// 堆疊阻擋時嘗試安全桌面落點，仍由同一預檢及發射流程處理。
@@ -1536,12 +1644,14 @@
 				if (!game.active || game.status !== "ready" || (game.mode === "cpu" && game.current === 1) || (event.button !== undefined && event.button !== 0)) return;
 
 				const board = getGameElement("game-board"), bounds = board.getBoundingClientRect();
-				if (event.clientY - bounds.top < bounds.height * 0.75) return;
+				const x = (event.clientX - bounds.left) / bounds.width, y = (event.clientY - bounds.top) / bounds.height;
+				if (x < 0 || x > 1 || y < 0 || y > 1 || (x > 0.25 && x < 0.75 && y > 0.25 && y < 0.75)) return;
+				unlockGameAudio();
 
 				game.drag = {
-					/* active、pointerId：單一有效手勢；startX、startY：底部起點；landing：預計落點。
+					/* active、pointerId：單一有效手勢；startX、startY：外圍起點；startWorld：桌面世界起點；landing：預計落點。
 					 * startTime：手勢事件起始時間；lastX、lastY：上一點；pathLength：真實滑動路徑；speed：按戰場高度正規化的速度。 */
-					active: true, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, landing: game.aim.clone(),
+					active: true, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, startWorld: gamePointerPoint(event), landing: game.aim.clone(),
 					startTime: event.timeStamp, lastX: event.clientX, lastY: event.clientY, pathLength: 0, speed: 0
 				};
 				board.setPointerCapture(event.pointerId);
@@ -1558,7 +1668,7 @@
 				game.drag.lastY = event.clientY;
 				const seconds = Math.max(0.001, (event.timeStamp - game.drag.startTime) / 1000);
 				game.drag.speed = game.drag.pathLength / Math.max(1, bounds.height) / seconds;
-				const distance = game.drag.startY - event.clientY;
+				const distance = inwardDragDistance(game.drag, event, bounds);
 				if (distance < 12) { getGameElement("throw-preview").setAttribute("hidden", ""); return; }
 
 				pickGameAim(event);
@@ -1578,10 +1688,11 @@
 				if (!game.drag?.active || event.pointerId !== game.drag.pointerId) return;
 
 				updateGameDrag(event);
-				const valid = game.drag.startY - event.clientY >= 12;
+				const valid = inwardDragDistance(game.drag, event, getGameElement("game-board").getBoundingClientRect()) >= 12;
+				const direction = game.aim.clone().sub(game.drag.startWorld).setY(0).normalize();
 				const speed = game.drag.speed;
 				cancelGameDrag();
-				if (valid) { game.swipeSpeed = speed; throwGameCoin(); }
+				if (valid) { game.swipeSpeed = speed; game.throwDirection = direction; throwGameCoin(); }
 			}
 
 			function cancelGameDrag() {
@@ -1591,17 +1702,25 @@
 				getGameElement("throw-preview").setAttribute("hidden", "");
 			}
 
-			function pickGameAim(event) {
-				if (!game.active || game.status !== "ready" || (game.mode === "cpu" && game.current === 1)) return;
+			function inwardDragDistance(drag, event, bounds) {
+				const cx = bounds.left + bounds.width / 2 - drag.startX, cy = bounds.top + bounds.height / 2 - drag.startY;
+				const length = Math.hypot(cx, cy);
+				return length ? ((event.clientX - drag.startX) * cx + (event.clientY - drag.startY) * cy) / length : 0;
+			}
 
+			function gamePointerPoint(event) {
 				const bounds = getGameElement("game-board").getBoundingClientRect();
-				getGameElement("game-board").focus({ /* preventScroll：瞄準後可使用鍵盤，不跳動頁面。 */ preventScroll: true });
 				const pointer = new THREE.Vector2((event.clientX - bounds.left) / bounds.width * 2 - 1, -((event.clientY - bounds.top) / bounds.height) * 2 + 1);
 				const ray = new THREE.Raycaster();
 				ray.setFromCamera(pointer, state.camera);
-				const point = new THREE.Vector3();
-				if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), point)) return;
+				return ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3()) || game.aim.clone();
+			}
 
+			function pickGameAim(event) {
+				if (!game.active || game.status !== "ready" || (game.mode === "cpu" && game.current === 1)) return;
+
+				const point = gamePointerPoint(event), radius = Math.hypot(point.x, point.z);
+				if (radius > 7.5) point.multiplyScalar(7.5 / radius);
 				game.aim.copy(point);
 				moveAimMarker();
 			}
