@@ -103,7 +103,8 @@ flowchart TD
 	Flush --> Hit[handleGameContact：接觸鏈命中]
 	Hit --> Edge[applyGameEdgeAssist：有界一次助推]
 	Sim --> Rest[isGameCoinResting]
-	Rest --> Capture[finishGameTurn：命中敵方背面收回手上]
+	Rest --> Face[stableGameFace：與投出前朝上面比較]
+	Face --> Capture[finishGameTurn：相對翻面捕獲與特效]
 	Capture --> Count{持有全部六枚}
 	Count -->|是| Won[won：顯示6：0]
 	Count -->|否| Next[換手 → updateGameUI]
@@ -124,7 +125,7 @@ flowchart TD
 | 函式 | 責任與回呼 |
 | --- | --- |
 | `getGameElement` | 以固定 ID 存取 DOM，使用者字形與名字只透過 textContent 顯示。 |
-| `bindGameControls` | 綁定開始、重開、投擲、回設定、仰角、桌面及鍵盤回呼；開發校準入口不提供給玩家。 |
+| `bindGameControls` | 綁定開始、重開、回設定、仰角及底部拖曳回呼；不提供点击、按鈕或鍵盤投擲。 |
 | `startGame` | 驗證六枚、建立輸入快照、字體／字形載入與 epoch 檢查、清理舊場景、建立對局；player map 回呼只建立安全名稱與色彩。 |
 | `setupGameBoard` | 建立固定邊界與非物理瞄準記號，重開時移除舊牆。 |
 | `clearGameBodies`、`removeGameBody` | 移除對局或單枚的剛體、幾何、材質、紋理與支撐紀錄。 |
@@ -150,7 +151,10 @@ flowchart TD
 | `scheduleCpuTurn` | 900ms 回呼驗 epoch／模式／玩家／狀態後，走同一投擲函式。 |
 | `pickGameAim` | 射線與桌面相交，限制目標範圍並聚焦鍵盤；空中射線不變更目標。 |
 | `moveAimMarker` | 同步瞄準記號位置。 |
-| `handleGameKey` | 不攔表單操作；方向鍵微調、Enter 投擲，CPU 回合不可手動出手。 |
+| `fitBattleCamera` | 真正正交垂直向下，結算及視窗改變時納入所有桌面枚與擊殺特效；無牆或世界位置夾限。 |
+| `stableGameFace` | 僅有真支撐且停止的枚回傳朝上面±1；側立、空中、移動及手中為0，供投出前基準與結算比較。 |
+| `spawnCaptureEffect`、`animateCaptureEffects` | 合法捕獲才建立金色環與碎光；0.8秒淡出擴散，無剛體、不影響結果。 |
+| `disposeCaptureEffect`、`clearCaptureEffects` | 移除及釋放特效幾何／材質；到期、重開與回設定清理。 |
 | `updateGameUI` | 更新安全名字、持有數、合法選幣按鈕、屬性、回合、勝利與紀錄；選幣回呼保留 id。 |
 | `animateGame` | 同步所有 3D 字形姿態，累積穩定時間，正常或超時呼叫結算。 |
 
@@ -218,7 +222,8 @@ flowchart TD
 | `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
 | `sampleRawRectangle`、內部 `knownImage`、`normalizedBalanceCheck` | 解析覆蓋率階段驗重量、完整投擲能量、幾何與重心保持，以及不污染校準模型。 |
 | `kineticEnergy`、`gameEdgeEnergyCheck` | 以世界慣量計算真正動能增量，驗攻方份額、一次助推、衝量上限且不直接改姿態／權屬。 |
-| `deferredContactCheck`、`highBoundaryCheck` | 驗真正接觸在求解後才助推、動能上限與舊佇列隔離，以及高處飛向 x／z 牆的實際碰撞。 |
+| `deferredContactCheck`、`infiniteBattlefieldCheck` | 驗接觸求解後一般助推、動能上限與佇列隔離；無牆、遠距出生及真實越過舊邊界不被阻擋。 |
+| `relativeFaceCheck`、`missingFaceBaselineCheck` | 驗正↔背雙向相對翻面與特效；同面旋轉及初始空中／移動／側立沒有基準，不能捕獲。 |
 | `spawnSafetyCheck` | 驗成功出生的完整形狀在牆內且不重疊，能量不變；手中及桌面枚全阻塞拒絕時不改原對局。 |
 
 ### 獨立測試模組
