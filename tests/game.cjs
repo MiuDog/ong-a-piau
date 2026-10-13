@@ -29,7 +29,7 @@ async function instrumentRoute(route) {
 
 	// 只暴露測試接點，不更改規則、判面或碰撞處理。
 	const response = await route.fetch();
-	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, collisionRectangles, isGameCoinResting }; </script>";
+	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, handleGameContact, localPoint }; </script>";
 	const html = (await response.text()).replace("</script>", expose);
 	await route.fulfill({ /* response：保留原回應；body：唯此測試可見的接點。 */ response, body: html });
 }
@@ -264,6 +264,11 @@ async function runChecks() {
 		standing.body.updateAABB();
 		standing.body.position.y += -0.001 - standing.body.aabb.lowerBound.y;
 		standing.body.aabbNeedsUpdate = true;
+		// fixture 主動移位後必須喚醒，讓引擎重新建立接觸；不沿用移位前的支撐紀錄。
+		for (const coin of [airborne, standing, airSupport]) {
+			coin.supportSnapshot = null;
+			coin.body.wakeUp();
+		}
 		step(1);
 		for (const coin of [airborne, standing, airSupport]) {
 			coin.hit = true;
@@ -405,13 +410,213 @@ async function runChecks() {
 			const kinetic = 0.5 * body.mass * body.velocity.lengthSquared();
 			const rotation = 0.5 * (model.inertia.x * omega.x ** 2 + model.inertia.y * omega.y ** 2 + model.inertia.z * omega.z ** 2);
 			const potential = body.mass * api.config.gravity * (body.position.y - floorHeight);
-			const coverage = model.mass / (api.config.density * api.config.thickness * api.config.size ** 2);
-			const budget = 6.4 * (0.75 - 0.5 * coverage) * power ** 2;
+			const coverage = model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
+			const budget = 4 * (0.75 - 0.5 * coverage) * power ** 2;
 			const capped = Math.min(budget, 18 * model.mass, 0.72 / model.mass);
 			near(kinetic + rotation + potential, capped, "高度、平移與旋轉必須共用同一實際投擲能量");
 			requireCondition(body.velocity.length() <= 6 + 1e-9 && body.mass * body.velocity.length() <= 1.2 + 1e-9, "遊戲發射也不得突破速度或衝量上限");
 			requireCondition(kinetic >= 0 && rotation >= 0 && potential >= -1e-9, "不可用負能量掩蓋超額發射");
 		}
+	}
+
+	function sampleRawRectangle(columns, rows) {
+		// 以解析矩形 alpha 取樣建立原始材料模型，覆蓋率由 fixture 尺寸決定。
+		const original = CanvasRenderingContext2D.prototype.getImageData;
+		function knownImage(x, y, width, height) {
+			const image = original.call(this, x, y, width, height);
+			image.data.fill(0);
+			for (let row = 0; row < height * rows / 16; row++) {
+				for (let col = 0; col < width * columns / 16; col++) image.data[(row * width + col) * 4 + 3] = 255;
+			}
+			return image;
+		}
+		CanvasRenderingContext2D.prototype.getImageData = knownImage;
+		try {
+			return api.sampleGlyph("田", "sans-serif");
+		}
+		finally {
+			CanvasRenderingContext2D.prototype.getImageData = original;
+		}
+	}
+
+	async function normalizedBalanceCheck() {
+		let previousMass = 0, previousEnergy = Infinity, previousDamping = 0;
+		for (const side of [1, 4, 8, 12, 16]) {
+			await newGame();
+			const coverage = side * side / 256;
+			const raw = sampleRawRectangle(side, side);
+			const original = JSON.stringify(raw);
+			const balanced = api.balanceGameModel(raw);
+			const mass = 0.18 + 0.12 * coverage, ratio = mass / raw.mass;
+			near(raw.mass, coverage * api.config.density * api.config.thickness * api.config.size ** 2, "實驗室材料質量必須保持原公式");
+			near(balanced.mass, mass, "遊戲規範化質量");
+			for (const key of ["cx", "cz", "angle", "support", "offset", "step"]) near(balanced[key], raw[key], "規範化不得改變形狀與重心");
+			for (const axis of ["x", "y", "z"]) near(balanced.inertia[axis], raw.inertia[axis] * ratio, "規範化必須一致縮放主慣量");
+			near(balanced.stability, raw.stability * ratio, "規範化重力能障必須與質量同比例");
+			requireCondition(balanced.cells.length === raw.cells.length, "規範化不得改變原佔據格數");
+			for (let index = 0; index < raw.cells.length; index++) {
+				const cell = balanced.cells[index], source = raw.cells[index];
+				near(cell.mass, source.mass * ratio, "每格質量必須一致縮放");
+				for (const key of ["x", "z", "row", "col", "alpha"]) near(cell[key], source[key], "規範化不得修改格位或覆蓋率");
+			}
+			requireCondition(JSON.stringify(raw) === original, "規範化不能原地修改共用實驗室模型");
+
+			// 直接投擲規範化後的字形，量測完整能量，不拿進攻份額儀表當成實際效果。
+			const coin = owned(0)[0];
+			coin.model = balanced;
+			requireCondition(api.selectGameCoin(coin.id), "規範化驗收必須使用合法持有枚");
+			api.game.power = 1;
+			requireCondition(api.throwGameCoin(), "規範化字形必須可以真正投擲");
+			const body = coin.body, omega = body.quaternion.conjugate().vmult(body.angularVelocity);
+			const rotation = 0.5 * (balanced.inertia.x * omega.x ** 2 + balanced.inertia.y * omega.y ** 2 + balanced.inertia.z * omega.z ** 2);
+			const energy = 0.5 * body.mass * body.velocity.lengthSquared() + rotation + body.mass * api.config.gravity * (body.position.y - floorHeight);
+			near(energy, 3 - 2 * coverage, "實際投擲能量必須等於未被上限截斷的進攻預算");
+			near(body.mass, mass, "規範化質量必須直接作用於剛體");
+			near(body.angularDamping, 0.08 + 0.24 * (0.25 + 0.5 * coverage), "高覆蓋率防守耗散必須直接作用於剛體");
+			requireCondition(body.mass > previousMass && energy < previousEnergy && body.angularDamping > previousDamping, "密度上升必須提高質量與耗散、嚴格降低实际發射能量");
+			requireCondition(body.velocity.length() <= 6 + 1e-9 && body.mass * body.velocity.length() <= 1.2 + 1e-9, "低密度亦不得突破速度與衝量上限");
+			assertBodyMask(body, balanced);
+			requireCondition(JSON.stringify(raw) === original, "建立及投擲遊戲剛體仍不得污染原材料模型");
+			previousMass = body.mass;
+			previousEnergy = energy;
+			previousDamping = body.angularDamping;
+		}
+	}
+
+	function kineticEnergy(body) {
+		const omega = body.quaternion.conjugate().vmult(body.angularVelocity);
+		return 0.5 * body.mass * body.velocity.lengthSquared() + 0.5 * (body.inertia.x * omega.x ** 2 + body.inertia.y * omega.y ** 2 + body.inertia.z * omega.z ** 2);
+	}
+
+	async function gameEdgeEnergyCheck() {
+		let previousExtra = Infinity;
+		for (const side of [1, 16]) {
+			await newGame();
+			const attacker = owned(0)[0], enemy = owned(1)[0];
+			attacker.model = api.balanceGameModel(sampleRawRectangle(side, side));
+			requireCondition(api.selectGameCoin(attacker.id), "攻方邊緣預算驗收必須合法選枚");
+			api.game.power = 1;
+			requireCondition(api.throwGameCoin(), "攻方必須先經真正投擲流程");
+			const body = place(enemy, 3);
+			body.velocity.set(0.2, 10, -0.1);
+			body.angularVelocity.set(2, 1, -1);
+			const point = api.localPoint(enemy.model.cells[0], enemy.model);
+			point.y = api.config.thickness / 2;
+			const offset = body.quaternion.vmult(point);
+			const contact = {
+				/* bi、bj：真實遊戲中的敵我剛體；ri、rj：已知世界力臂；getImpactVelocityAlongNormal：高入射fixture迫使能量上限生效。 */
+				bi: body, bj: attacker.body, ri: offset, rj: offset,
+				getImpactVelocityAlongNormal: () => 1000000
+			};
+			const event = { /* body：本次投出的攻方；contact：隔離遊戲能量上限的已知接觸條件。 */ body: attacker.body, contact };
+			const before = kineticEnergy(body);
+			const velocityBefore = body.velocity.clone(), positionBefore = body.position.clone(), orientationBefore = body.quaternion.clone();
+			api.handleGameContact(body, event);
+			const after = kineticEnergy(body), extra = after - before;
+			const coverage = side * side / 256;
+			near(extra, 1.2 * (0.75 - 0.5 * coverage) / 0.75, "遊戲邊緣額外能量必須由攻方進攻份額決定");
+			const impulse = body.mass * (body.velocity.y - velocityBefore.y);
+			requireCondition(impulse > 0 && impulse <= 0.8 + 1e-9, "遊戲助推的實際向上衝量必須受0.8Ns上限限制");
+			near(body.position.distanceTo(positionBefore), 0, "助推不可直接改變位置");
+			for (const axis of ["x", "y", "z", "w"]) near(body.quaternion[axis], orientationBefore[axis], "助推不可強制指定姿態或正背面");
+			requireCondition(extra < previousExtra && enemy.assistUsed && enemy.hit, "較密攻方必須取得較低加成上限，並標記本枚已使用");
+			api.handleGameContact(body, event);
+			near(kineticEnergy(body), after, "同枚敵方在同次投擲不得重複取得助推");
+			requireCondition(enemy.owner === 1, "邊緣助推不能直接代替最終判面或捕獲");
+			previousExtra = extra;
+		}
+	}
+
+	function recordGroundSupport(coin) {
+		// 暫停自動睡眠，先讓真正接觸方程穩定；不由測試偽造支撐紀錄。
+		coin.body.allowSleep = false;
+		step(120);
+		requireCondition(api.isGameCoinResting(coin), "必須先由真實接觸建立穩定桌面支撐");
+		coin.body.allowSleep = true;
+		coin.body.sleep();
+		step(6);
+	}
+
+	async function sleepingSupportCheck() {
+		await newGame();
+		const natural = owned(0)[0];
+		place(natural, -3);
+		// 對局本身已啟用自動睡眠，直接驗證產品設定及真正入睡轉折，不再由 fixture 代為開啟。
+		requireCondition(api.state.world.allowSleep === true, "開始對局必須啟用其自然睡眠策略");
+		for (let tick = 0; tick < 1200 && natural.body.sleepState !== 2; tick++) {
+			step(1);
+			api.isGameCoinResting(natural);
+		}
+		requireCondition(natural.body.sleepState === 2, "正常落地薄片必須能自然睡眠");
+		step(6);
+		requireCondition(api.isGameCoinResting(natural), "自然入睡的最後微小位移不能造成永久未停止");
+
+		await newGame();
+		const thrown = beginThrow();
+		place(thrown, 4, 3);
+		const enemy = owned(1)[0];
+		place(enemy, -4);
+		backface(enemy);
+		recordGroundSupport(enemy);
+		const touchesEnemy = (contact) => contact.bi === enemy.body || contact.bj === enemy.body;
+		requireCondition(!api.state.world.contacts.some(touchesEnemy), "fixture 必須確實重現睡眠剛體接觸方程被省略");
+		requireCondition(api.isGameCoinResting(enemy), "曾真實接地且姿態未變的睡眠薄片仍應判為停止");
+		enemy.body.position.y = 5;
+		enemy.body.aabbNeedsUpdate = true;
+		step(1);
+		requireCondition(!api.isGameCoinResting(enemy), "移至空中後舊接地紀錄必須失效");
+		enemy.hit = true;
+		api.finishGameTurn(true);
+		requireCondition(enemy.owner === 1 && enemy.body, "睡眠且空中的背面枚不可因舊紀錄被捕獲");
+		assertSix();
+	}
+
+	async function supportedStackRemovalCheck() {
+		await newGame();
+		const thrown = beginThrow();
+		place(thrown, 4, 3);
+		const lower = owned(1)[0], upper = owned(0).find((coin) => coin !== thrown);
+		place(lower);
+		backface(lower);
+		place(upper);
+		upper.body.position.y += api.config.thickness + 0.003;
+		for (const coin of [lower, upper, thrown]) coin.body.allowSleep = false;
+		step(360);
+		for (const coin of [lower, upper, thrown]) {
+			requireCondition(api.isGameCoinResting(coin), "疊放 fixture 必須先由真實接觸穩定支撐");
+			coin.body.allowSleep = true;
+			coin.body.sleep();
+		}
+		step(6);
+		requireCondition(api.isGameCoinResting(upper), "未變姿態的睡眠上層必須保留已確認的支撐路徑");
+		lower.hit = true;
+		api.finishGameTurn();
+		requireCondition(lower.owner === 0 && lower.body === null, "下層敵枚應經正常背面捕獲而移除");
+		requireCondition(upper.body && upper.body.sleepState !== 2, "捕獲支撐枚後必須喚醒仍在桌面的上層");
+		requireCondition(upper.supportSnapshot == null, "捕獲後不得保留引用已移除支撐的快取");
+		requireCondition(!api.isGameCoinResting(upper), "失去下層後的上層不能沿舊路徑判為接地");
+		assertSix();
+	}
+
+	async function newThrowInvalidatesSupportCheck() {
+		await newGame();
+		const friendly = owned(0)[0], enemy = owned(1)[0];
+		place(friendly, -4);
+		place(enemy, 4);
+		for (const coin of [friendly, enemy]) coin.body.allowSleep = false;
+		step(120);
+		for (const coin of [friendly, enemy]) {
+			requireCondition(api.isGameCoinResting(coin), "新投擲前必須先記錄真實桌面支撐");
+			coin.body.allowSleep = true;
+			coin.body.sleep();
+		}
+		step(6);
+		beginThrow();
+		for (const coin of [friendly, enemy]) {
+			requireCondition(coin.body.sleepState !== 2, "新投擲必須喚醒所有仍在桌面的薄片");
+			requireCondition(coin.supportSnapshot == null, "新投擲必須重新驗證支撐，不可沿用前回合快取");
+		}
+		assertSix();
 	}
 
 	await check("六枚開局、所有權與手中優先", setupPriorityCheck);
@@ -423,6 +628,11 @@ async function runChecks() {
 	await check("電腦真實投擲與過期回呼隔離", cpuTimerCheck);
 	await check("合併碰撞盒保留原遮罩、空洞、質量與慣量", mergedGeometryCheck);
 	await check("遊戲投擲平移、旋轉、高度共用有界預算", gameEnergyCheck);
+	await check("遊戲規範化保留原模型、密度攻防實際單調", normalizedBalanceCheck);
+	await check("遊戲邊緣能量隨攻方進攻份額下降且每枚只加一次", gameEdgeEnergyCheck);
+	await check("睡眠接觸省略後仍停止、移至空中快取失效", sleepingSupportCheck);
+	await check("睡眠疊放支撐、捕獲下層後喚醒與失效", supportedStackRemovalCheck);
+	await check("新投擲清除前回合支撐紀錄並喚醒桌面枚", newThrowInvalidatesSupportCheck);
 	return { /* passed：實際通過的流程；failures：逐項失敗原因，禁止用跳過取代修正。 */ passed, failures };
 }
 

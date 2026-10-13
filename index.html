@@ -36,8 +36,8 @@
 			details { margin-top: 18px; color: #52616d; line-height: 1.7; }
 			[hidden] { display: none !important; }
 			.player-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
-			.coin-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-			.coin-inputs input { text-align: center; font-size: 24px; }
+			.coin-inputs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+			.coin-inputs input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #b8c4cc; border-radius: 6px; text-align: center; font-size: 24px; background: #fff; }
 			.player-heading { margin: 0; font-size: 18px; }
 			.player-0 { border-top: 3px solid #247a95; }
 			.player-1 { border-top: 3px solid #b76532; }
@@ -98,7 +98,7 @@
 			<section id="match" hidden>
 				<div class="scoreboard"><div id="score-0" class="score player-0"></div><div id="score-1" class="score player-1"></div></div>
 				<div class="match-layout">
-					<div><div id="game-board" aria-label="3D 桌面；點選位置瞄準"></div><p class="legend">點擊／觸碰桌面瞄準。方向鍵可微調，Enter 投擲。正面保留原字，灰白色背面朝上才可被奪取。</p></div>
+					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；點選位置瞄準，方向鍵微調，Enter 投擲"></div><p class="legend">點擊／觸碰桌面瞄準。方向鍵可微調，Enter 投擲。正面保留原字，灰白色背面朝上才可被奪取。</p></div>
 					<aside class="panel">
 						<h2 id="turn-label"></h2><p id="match-status" role="status" aria-live="polite"></p><div id="winner" hidden></div>
 						<div id="coin-list"></div><p id="selected-stats" class="legend"></p>
@@ -887,13 +887,15 @@
 
 						const family = loaded ? `"${descriptor.font}", sans-serif` : "sans-serif";
 						const key = `${descriptor.text}|${family}`;
-						const model = cache.get(key) || sampleGlyph(descriptor.text, family);
-						cache.set(key, model);
+						const rawModel = cache.get(key) || sampleGlyph(descriptor.text, family);
+						cache.set(key, rawModel);
+						const model = balanceGameModel(rawModel);
 						coins.push({
 							/* id、owner、text、font：承接已驗證的永久身分與外觀設定。
 							 * model：捕獲後仍共用原物性；body、mesh：null 表示在手上。
-							 * hit：本次攻擊接觸鏈是否命中；assistUsed：本回合邊緣加成不得疊加。 */
-							...descriptor, model, body: null, mesh: null, hit: false, assistUsed: false
+							 * hit：本次攻擊接觸鏈是否命中；assistUsed：本回合邊緣加成不得疊加。
+							 * supportSnapshot：真正接觸桌面的支撐路徑，休眠省略接觸時才能沿用。 */
+							...descriptor, model, body: null, mesh: null, hit: false, assistUsed: false, supportSnapshot: null
 						});
 					}
 					clearGameBodies();
@@ -910,7 +912,8 @@
 						if (owner === 1 && game.mode === "cpu" && name === "玩家二") name = "電腦";
 						return { /* name：安全顯示名稱；color：所有權辨識色，不參與質量。 */ name, color: owner === 0 ? "#247a95" : "#b76532" };
 					});
-					game.active = true;
+				game.active = true;
+				state.world.allowSleep = true;
 					game.current = game.thrower = 0;
 					game.status = "ready";
 					game.winner = null;
@@ -966,6 +969,7 @@
 			function removeGameBody(coin) {
 				clearBody(coin.body, coin.mesh);
 				coin.body = coin.mesh = null;
+				coin.supportSnapshot = null;
 			}
 
 			function leaveGame() {
@@ -978,6 +982,7 @@
 				if (game.aimMesh) clearBody(null, game.aimMesh);
 				game.aimMesh = null;
 				game.active = false;
+				state.world.allowSleep = false;
 				game.status = "setup";
 				getGameElement("match").hidden = getGameElement("lab").hidden = true;
 				getGameElement("setup").hidden = false;
@@ -1020,7 +1025,29 @@
 				body.updateInertiaWorld(true);
 				body.updateSolveMassProperties();
 				body.addEventListener("collide", (event) => handleGameContact(body, event));
+				body.addEventListener("sleep", () => {
+					// 自動休眠後接觸對可能省略，先沿真正的最後接觸保存支撐證據。
+					const coin = game.coins.find((item) => item.body === body);
+					if (coin) isGameCoinResting(coin);
+				});
 				return body;
+			}
+
+			function balanceGameModel(raw) {
+				// 遊戲材質正規化：保留像素分布，但避免稀疏字被速度上限削弱或密字過重。
+				if (!Number.isFinite(raw.mass) || raw.mass <= 0) throw new Error("字形沒有有效質量");
+
+				const coverage = balanceProfile(raw).coverage;
+				const mass = 0.18 + 0.12 * coverage, scale = mass / raw.mass;
+				return {
+					/* ...raw：保留取樣輪廓、重心、字體及視覺，欄位契約見 sampleGlyph。
+					 * mass、cells、inertia、stability：均勻縮放質量的遊戲材質，不能原地修改校準模型。
+					 * rawMass：保留原始材質質量供核對；physicalScale：本局均勻材質縮放係數。 */
+					...raw, mass,
+					cells: raw.cells.map((cell) => ({ /* ...cell：原像素位置與覆蓋資訊；mass：同倍縮放，不改幾何分布。 */ ...cell, mass: cell.mass * scale })),
+					inertia: new CANNON.Vec3(raw.inertia.x * scale, raw.inertia.y * scale, raw.inertia.z * scale),
+					stability: raw.stability * scale, rawMass: raw.mass, physicalScale: scale
+				};
 			}
 
 			function collisionRectangles(model) {
@@ -1060,9 +1087,10 @@
 				game.thrownId = coin.id;
 				for (const item of game.coins) { item.hit = false; item.assistUsed = false; }
 				removeGameBody(coin);
+				wakeGameCoins();
 				const model = coin.model;
 				const power = Math.max(0, Math.min(1, Number(game.power) || 0));
-				const energy = Math.min(6.4 * balanceProfile(model).offense * power * power, 18 * model.mass, 0.72 / model.mass);
+				const energy = Math.min(4 * balanceProfile(model).offense * power * power, 18 * model.mass, 0.72 / model.mass);
 				const height = Math.min(1.1, energy * 0.35 / (model.mass * config.gravity));
 				const remaining = Math.max(0, energy - model.mass * config.gravity * height);
 				const spinEnergy = remaining * 0.1;
@@ -1073,6 +1101,8 @@
 				const direction = game.current === 0 ? 1 : -1;
 				const vx = direction * horizontal * 0.6, vz = -direction * horizontal * 0.8;
 				const position = new CANNON.Vec3(game.aim.x - vx * flightTime, config.thickness / 2 + 0.003 + height, game.aim.z - vz * flightTime);
+				position.x = Math.max(-4.3, Math.min(4.3, position.x));
+				position.z = Math.max(-2.8, Math.min(2.8, position.z));
 				coin.body = makeGameBody(model, position);
 				coin.body.velocity.set(vx, -vertical, vz);
 				const localSpin = new CANNON.Vec3(Math.sqrt(2 * spinEnergy / model.inertia.x), 0, 0);
@@ -1115,8 +1145,10 @@
 				const angular = inverseRotation.vmult(body.angularVelocity);
 				const k = 1 / body.mass + torque.x ** 2 * body.invInertia.x + torque.y ** 2 * body.invInertia.y + torque.z ** 2 * body.invInertia.z;
 				const b = body.velocity.y + angular.dot(torque);
-				const cap = (-b + Math.sqrt(b * b + 2 * k * 0.12)) / k;
-				const impulse = Math.min(0.3, cap, 0.25 * body.mass * impact * (profile.gain - 1));
+				const attacker = game.coins.find((item) => item.id === game.thrownId);
+				const extraEnergy = 1.2 * balanceProfile(attacker?.model).offense / 0.75;
+				const cap = (-b + Math.sqrt(b * b + 2 * k * extraEnergy)) / k;
+				const impulse = Math.min(0.8, cap, 0.8 * body.mass * impact * (profile.gain - 1));
 				body.wakeUp();
 				body.applyImpulse(new CANNON.Vec3(0, impulse, 0), offset);
 				return impulse > 0;
@@ -1124,26 +1156,49 @@
 
 			function isGameCoinResting(coin) {
 				if (!coin.body || coin.body.velocity.length() >= 0.12 || coin.body.angularVelocity.length() >= 0.16) return false;
+				if (validGameSupportSnapshot(coin)) return true;
 
 				// 支撐可經靜止薄片傳到桌面，避免疊放造成永久等候；接觸環不可當成地面。
-				const queue = [coin.body], visited = new Set();
+				const queue = [{ /* body：本次探查物件；route：已證明的接觸鏈，供休眠快照。 */ body: coin.body, route: [coin.body] }], visited = new Set();
 				while (queue.length) {
-					const body = queue.shift();
+					const current = queue.shift(), body = current.body;
 					if (visited.has(body)) continue;
 
 					visited.add(body);
+					const supportingCoin = game.coins.find((item) => item.body === body);
+					if (supportingCoin && supportingCoin !== coin && validGameSupportSnapshot(supportingCoin)) {
+						coin.supportSnapshot = current.route.map((support) => ({ /* body、position、quaternion：新接觸鏈的姿態證據。 */ body: support, position: support.position.clone(), quaternion: support.quaternion.clone() })).concat(supportingCoin.supportSnapshot);
+						return true;
+					}
 					for (const contact of state.world.contacts) {
 						let other = null;
 						if (contact.bi === body) other = contact.bj;
 						else if (contact.bj === body) other = contact.bi;
 						if (!other) continue;
 
-						if (other === state.floor) return true;
+						if (other === state.floor) {
+							coin.supportSnapshot = current.route.map((support) => ({ /* body：支撐剛體身分；position、quaternion：接觸成立時姿態，移動或支撐移除即失效。 */ body: support, position: support.position.clone(), quaternion: support.quaternion.clone() }));
+							return true;
+						}
 
-						if (game.coins.some((item) => item.body === other) && other.velocity.length() < 0.12 && other.angularVelocity.length() < 0.16) queue.push(other);
+						if (game.coins.some((item) => item.body === other) && other.velocity.length() < 0.12 && other.angularVelocity.length() < 0.16) queue.push({ /* body：下一個支撐物；route：延長接觸鏈，不接受純空中環。 */ body: other, route: current.route.concat(other) });
 					}
 				}
 				return false;
+			}
+
+			function validGameSupportSnapshot(coin) {
+				if (!coin.body || coin.body.sleepState !== CANNON.Body.SLEEPING || !coin.supportSnapshot?.length) return false;
+
+				return coin.supportSnapshot.every((entry) => game.coins.some((item) => item.body === entry.body) && entry.body.position.distanceTo(entry.position) < 1e-7 && Math.abs(entry.body.quaternion.x * entry.quaternion.x + entry.body.quaternion.y * entry.quaternion.y + entry.body.quaternion.z * entry.quaternion.z + entry.body.quaternion.w * entry.quaternion.w) > 1 - 1e-7 && entry.body.velocity.length() < 0.12 && entry.body.angularVelocity.length() < 0.16);
+			}
+
+			function wakeGameCoins() {
+				// 拿起或捕獲下層可能移除支撐，喚醒其餘枚並使舊快照失效。
+				for (const coin of game.coins) {
+					coin.supportSnapshot = null;
+					if (coin.body) coin.body.wakeUp();
+				}
 			}
 
 			function finishGameTurn(force = false) {
@@ -1159,6 +1214,7 @@
 					removeGameBody(coin);
 					coin.owner = thrower;
 				}
+				if (captured.length) wakeGameCoins();
 				const message = captured.length ? `${game.players[thrower].name}奪取 ${captured.map((coin) => `「${coin.text}」`).join("、")}，已收回手上。` : `${game.players[thrower].name}本次未奪幣。${force ? "未穩定的薄片不計奪取。" : "正面落地或未命中，繼續下一手。"}`;
 				game.log.unshift(`第${game.turn}手：${message}`);
 				game.log = game.log.slice(0, 12);
@@ -1188,9 +1244,19 @@
 				const available = availableGameCoins(game.current);
 				if (!available.length) return null;
 
-				const coin = [...available].sort((a, b) => balanceProfile(b.model).offense - balanceProfile(a.model).offense)[0];
 				const opponents = game.coins.filter((item) => item.owner !== game.current && item.body);
 				const target = [...opponents].sort((a, b) => a.model.stability - b.model.stability)[0];
+				const power = game.difficulty === "easy" ? 0.65 : game.difficulty === "hard" ? 0.95 : 0.85;
+				const attackScore = (candidate) => {
+					const mass = candidate.model.mass;
+					const energy = Math.min(4 * balanceProfile(candidate.model).offense * power * power, 18 * mass, 0.72 / mass);
+					if (!target) return energy;
+
+					// 使用一維質量匹配的能量傳遞估計選枚，不預測或改寫翻面結果。
+					const ratio = mass / target.model.mass;
+					return energy * 4 * ratio / (1 + ratio) ** 2;
+				};
+				const coin = [...available].sort((a, b) => attackScore(b) - attackScore(a))[0];
 				const aim = new THREE.Vector3(2.7, 0, -1.4);
 				if (target) {
 					const cell = target.model.cells[farthestCell(target.model)];
@@ -1200,9 +1266,9 @@
 				const error = game.difficulty === "hard" ? 0.08 : game.difficulty === "easy" ? 0.65 : 0.3;
 				aim.x += (Math.random() - 0.5) * 2 * error;
 				aim.z += (Math.random() - 0.5) * 2 * error;
-				aim.x = Math.max(-3.9, Math.min(3.9, aim.x));
-				aim.z = Math.max(-2.6, Math.min(2.6, aim.z));
-				return { /* coinId：合法可用枚；aim：有誤差的桌面目標；power：實際投擲力度，無勝負特權。 */ coinId: coin.id, aim, power: game.difficulty === "easy" ? 0.65 : 0.95 };
+				aim.x = Math.max(-5.2, Math.min(5.2, aim.x));
+				aim.z = Math.max(-3.7, Math.min(3.7, aim.z));
+				return { /* coinId：合法可用枚；aim：有誤差的桌面目標；power：實際投擲力度，無勝負特權。 */ coinId: coin.id, aim, power };
 			}
 
 			function scheduleCpuTurn() {
@@ -1229,13 +1295,14 @@
 				if (!game.active || game.status !== "ready" || (game.mode === "cpu" && game.current === 1)) return;
 
 				const bounds = getGameElement("game-board").getBoundingClientRect();
+				getGameElement("game-board").focus({ /* preventScroll：瞄準後可使用鍵盤，不跳動頁面。 */ preventScroll: true });
 				const pointer = new THREE.Vector2((event.clientX - bounds.left) / bounds.width * 2 - 1, -((event.clientY - bounds.top) / bounds.height) * 2 + 1);
 				const ray = new THREE.Raycaster();
 				ray.setFromCamera(pointer, state.camera);
 				const point = new THREE.Vector3();
 				if (!ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), point)) return;
 
-				game.aim.set(Math.max(-3.9, Math.min(3.9, point.x)), 0, Math.max(-2.6, Math.min(2.6, point.z)));
+				game.aim.set(Math.max(-5.2, Math.min(5.2, point.x)), 0, Math.max(-3.7, Math.min(3.7, point.z)));
 				moveAimMarker();
 			}
 
@@ -1255,8 +1322,8 @@
 				if (event.key === "ArrowRight") game.aim.x += 0.15;
 				if (event.key === "ArrowUp") game.aim.z -= 0.15;
 				if (event.key === "ArrowDown") game.aim.z += 0.15;
-				game.aim.x = Math.max(-3.9, Math.min(3.9, game.aim.x));
-				game.aim.z = Math.max(-2.6, Math.min(2.6, game.aim.z));
+				game.aim.x = Math.max(-5.2, Math.min(5.2, game.aim.x));
+				game.aim.z = Math.max(-3.7, Math.min(3.7, game.aim.z));
 				moveAimMarker();
 			}
 
@@ -1298,7 +1365,9 @@
 				const selected = game.coins.find((coin) => coin.id === game.selectedId);
 				if (selected) {
 					const profile = balanceProfile(selected.model);
-					getGameElement("selected-stats").textContent = `重量 ${selected.model.mass.toFixed(2)} · 穩定 ${selected.model.stability.toFixed(2)} · 進攻 ${(profile.offense * 100).toFixed(0)}%／防守 ${(profile.defense * 100).toFixed(0)}%`;
+					const point = localPoint(selected.model.cells[farthestCell(selected.model)], selected.model);
+					const agility = Math.hypot(point.z / selected.model.inertia.x, point.x / selected.model.inertia.z);
+					getGameElement("selected-stats").textContent = `重量 ${selected.model.mass.toFixed(2)} · 穩定 ${selected.model.stability.toFixed(2)} · 翻轉靈敏度 ${agility.toFixed(1)}。進攻 ${(profile.offense * 100).toFixed(0)}%／防守 ${(profile.defense * 100).toFixed(0)}%`;
 				}
 				const winner = getGameElement("winner");
 				winner.hidden = game.status !== "won";

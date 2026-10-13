@@ -1,6 +1,6 @@
-# 尪仔標：硬幣版 — 第一階段架構
+# 尪仔標：硬幣版 — 第一版架構
 
-目前實作為單一 [index.html](index.html) 的字形物理實驗原型。回合、奪幣、6：0 勝負及電腦玩家仍列在 [規格書](docs/specification.md)，尚未實作。
+實作為單一 [index.html](index.html)，包含淺色設定介面、單人對電腦、單機雙人、完整三幣開局與六幣全拿回合，以及保留的物理測試。玩法見 [規格書](docs/specification.md)。
 
 ## 模組與協作者
 
@@ -33,8 +33,9 @@ flowchart TD
 - `state.assistUsed` 避免同一球體在多個格上觸發重複加成，`lastAssist` 記錄真正施加的量；`lastLaunch` 記錄攻方能量預算與實際上限。
 - `elements` 以 HTML 元素 ID 為鍵、對應 DOM 元素為值，綁定設定與結果畫面。
 - `cache` 以輸入字形與實際字體家族組合作為鍵，保存本次網頁中的取樣資料。
+- `game` 保存六枚的唯一身分、手上／桌面位置、目前主人、回合、瞄準、力道、AI 計時器及世代；`coin.body === null` 表示在手上。設定快照不可被晚到的字體載入或舊計時器覆寫。
 - 像素的 alpha 是有效材料覆蓋率；所有字形共用材料密度。背景碰撞格為整格近似，質量以覆蓋率估計。
-- 質量中心成為剛體原點；先對角化桌面上的質量分布，再以平行軸定理求主軸慣量，覆寫引擎預設包圍盒慣量。
+- 質量中心成為剛體原點；先對角化桌面上的質量分布，再以平行軸定理求主軸慣量，覆寫引擎預設包圍盒慣量。正式對局另由 `balanceGameModel` 均勻縮放重量與慣量，保留重心及原始校準快取，使實際進攻能量單調下降、防守質量與耗散單調上升。
 - `model.canvas` 保存同一輸入與字體的原始彩色字形；`model.contours` 保存顯示輪廓。正面 UV 對回字形圖，背面與側面使用辨識色。
 - 輪廓外框／孔洞由有向面積辨識；洞附屬於包含它的最小外框。顯示輪廓有厚度，但不額外貢獻質量。
 
@@ -82,6 +83,68 @@ flowchart TD
 
 O/D 是使用者要求的互補遊戲配置，非新自然定律。發射上限先計算可施加總能量，再將其中一部分分配高度，其餘施加 COM 衝量。邊緣加成使用相對接觸點的力臂與逆慣量，限制 `ΔKE = bJ + kJ²/2`，包含當前動量的交叉項。真正的接觸方盒保持不可見。
 
+## 對局與物件生命週期
+
+```mermaid
+flowchart TD
+	Setup[startGame] --> Validate[六枚設定與字素驗證]
+	Validate --> Font[字體載入／後備字形]
+	Font --> Epoch{仍是同一世代}
+	Epoch -->|是| Ready[ready：選幣與瞄準]
+	Epoch -->|否| Ignore[丟棄過期結果]
+	Ready --> Available[availableGameCoins：手上優先]
+	Available --> Throw[throwGameCoin]
+	Throw --> Shape[makeGameBody → collisionRectangles]
+	Shape --> Sim[simulating：真實物理步進]
+	Sim --> Hit[handleGameContact：接觸鏈命中]
+	Hit --> Edge[applyGameEdgeAssist：有界一次助推]
+	Sim --> Rest[isGameCoinResting]
+	Rest --> Capture[finishGameTurn：命中敵方背面收回手上]
+	Capture --> Count{持有全部六枚}
+	Count -->|是| Won[won：顯示6：0]
+	Count -->|否| Next[換手 → updateGameUI]
+	Next --> CPU[scheduleCpuTurn → planCpuTurn]
+	CPU --> Throw
+	Next --> Ready
+	Sim -->|10秒未定| Capture
+```
+
+每次捕獲先快照符合條件的所有枚，再轉移到攻方手上，避免先移除下層影響同時結算。移除、拾起或捕獲會喚醒其餘枚並清除支撐快照。只按手上＋桌面的主人數判6：0。
+
+正式對戰啟用自動休眠；物理測試保留不自動休眠的校準模式。每枚 sleep 回呼從真實接觸取得支撐路徑；當引擎省略休眠接觸時，只接受仍存在、位置與姿態未變且速度低的證據。疊放可經靜止薄片傳到地面，純空中環不可作支撐。新投擲與捕獲清除舊快照並喚醒，避免浮空殘留。
+
+投擲以共同能量預算分配位能、平移與旋轉，電腦和真人同路徑。電腦只選合法枚、目標與力度，難度改變瞄準誤差。它不改寫姿態或所有權。回設定與重開使用 `epoch` 及 timer 清理隔離舊動作。
+
+## 遊戲函式責任
+
+| 函式 | 責任與回呼 |
+| --- | --- |
+| `getGameElement` | 以固定 ID 存取 DOM，使用者字形與名字只透過 textContent 顯示。 |
+| `bindGameControls` | 綁定開始、重開、投擲、回設定、模式、力度、物理測試、桌面及鍵盤回呼。 |
+| `startGame` | 驗證六枚、建立輸入快照、字體／字形載入與 epoch 檢查、清理舊場景、建立對局；player map 回呼只建立安全名稱與色彩。 |
+| `setupGameBoard` | 建立固定邊界與非物理瞄準記號，重開時移除舊牆。 |
+| `clearGameBodies`、`removeGameBody` | 移除對局或單枚的剛體、幾何、材質、紋理與支撐紀錄。 |
+| `leaveGame` | 取消 CPU、隔離舊世代、清理對局並還原設定／物理测试容器。 |
+| `availableGameCoins` | filter 所有權與手上枚，實現手上優先。 |
+| `selectGameCoin` | 驗證 ready 與合法枚後更新選取。 |
+| `makeGameBody` | 合併背景碰撞區，保留主軸質量／慣量；collide 回呼處理接觸，sleep 回呼保存真實支撐。 |
+| `balanceGameModel` | 由覆蓋率限定遊戲重量，非原地縮放各像素／慣量／穩定值；保留原始模型快取、重心與輪廓。 |
+| `collisionRectangles` | 合併相鄰完整行段，保留遮罩空洞與佔據區；map 回呼建立格座標集合。 |
+| `throwGameCoin` | 保存本次攻擊者、拾起合法枚、喚醒其他枚、分配位能／平移／旋轉，開始真實模擬。 |
+| `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
+| `applyGameEdgeAssist` | 在真实接觸力臂施加有動能增量上限的補充衝量，不指定結果。 |
+| `isGameCoinResting` | 分別檢查速度，BFS 真實支撐路徑，或驗證休眠快照；map 回呼記錄姿態證據。 |
+| `validGameSupportSnapshot` | every/some 檢查休眠路徑中的物件仍存在、未移位、未旋轉且未移動。 |
+| `wakeGameCoins` | 清除支撐紀錄並喚醒現有桌面枚。 |
+| `finishGameTurn` | 正常等待或超時結算、快照多枚捕獲、維持身分回手、檢查6：0、換手與 AI 排程。 |
+| `planCpuTurn` | 對手穩定度排序，內部 `attackScore` 以受限能量和質量傳遞估計選攻方，求有誤差的邊緣目標，回傳實際出手計畫。 |
+| `scheduleCpuTurn` | 900ms 回呼驗 epoch／模式／玩家／狀態後，走同一投擲函式。 |
+| `pickGameAim` | 射線與桌面相交，限制目標範圍並聚焦鍵盤；空中射線不變更目標。 |
+| `moveAimMarker` | 同步瞄準記號位置。 |
+| `handleGameKey` | 不攔表單操作；方向鍵微調、Enter 投擲，CPU 回合不可手動出手。 |
+| `updateGameUI` | 更新安全名字、持有數、合法選幣按鈕、屬性、回合、勝利與紀錄；選幣回呼保留 id。 |
+| `animateGame` | 同步所有 3D 字形姿態，累積穩定時間，正常或超時呼叫結算。 |
+
 ## 函式責任清單
 
 | 函式 | 責任與主要分支 |
@@ -122,6 +185,27 @@ O/D 是使用者要求的互補遊戲配置，非新自然定律。發射上限�
 
 ## 驗證與限制
 
+### 對局驗收
+
+[tests/game.cjs](tests/game.cjs) 由 Astra 維護，產品實作者不得改動驗收要求。
+
+| 對局測試函式 | 責任 |
+| --- | --- |
+| `main`、`instrumentRoute`、`runChecks` | 啟動瀏覽器、停用自動 rAF、注入唯測試接點並逐項執行。 |
+| `near`、`requireCondition`、`check` | 獨立容差與分項驗證。 |
+| `newGame`、`owned`、`assertSix` | 透過設定初始化，查詢權屬與六枚唯一性。 |
+| `place`、`backface`、`step`、`beginThrow` | 建立真剛體 fixture、姿態與固定物理步進，不偽造接觸資料。 |
+| `setupPriorityCheck`、`boardReuseCheck` | 手上優先、合法選枚、重投及換手。 |
+| `realCollisionCaptureCheck` | 真實碰撞→命中→捕獲入手→再次投擲，身分與物性保持。 |
+| `exclusionCheck`、`multiAndWinCheck` | 非捕獲條件、多枚捕獲、5：1繼續與6：0勝利。 |
+| `cpuAndRestartCheck`、`finishWithQueuedTimers`、`cpuTimerCheck` | AI 計畫、真正排程出手及過期世代隔離。 |
+| `assertPartition`、`assertBodyMask`、`mergedGeometryCheck` | 以獨立遮罩逐格驗合併區與實際方盒，不填洞、不遺漏、不重疊。 |
+| `gameEnergyCheck` | 真正出手的高度、平移與旋轉共用預算與速度／衝量上限。 |
+| `recordGroundSupport`、`sleepingSupportCheck` | 以真正桌面接觸和產品自然休眠測試紀錄與空中失效。 |
+| `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
+| `sampleRawRectangle`、內部 `knownImage`、`normalizedBalanceCheck` | 解析覆蓋率階段驗重量、完整投擲能量、幾何與重心保持，以及不污染校準模型。 |
+| `kineticEnergy`、`gameEdgeEnergyCheck` | 以世界慣量計算真正動能增量，驗攻方份額、一次助推、衝量上限且不直接改姿態／權屬。 |
+
 ### 獨立測試模組
 
 [tests/physics.cjs](tests/physics.cjs) 由 GPT-6 Astra 撰寫，產品實作者不得修改測試要求。`main` 啟動瀏覽器並透過 `instrumentRoute` 僅在本地測試注入物理接點，再執行 `runPhysicsChecks`。測試使用固定步進，避免依賴實際動畫時序。
@@ -158,4 +242,4 @@ O/D 是使用者要求的互補遊戲配置，非新自然定律。發射上限�
 
 物理公式與必要預期由 GPT-6 Astra 蒸餾並定義，記錄於 [physics-distillation.md](docs/physics-distillation.md)。三個屬性是同一物理模型的描述，不另行乘上攻防或成功率係數。
 
-原型需網路載入 Three.js、cannon-es 及 Noto 字體。標楷體和 emoji 外觀依裝置，取樣、紋理與物理同步使用实际顯示字形。低解析整格碰撞與高解析顯示輪廓之間有近似誤差；尚不包含完整對戰操作、硬幣間高速接觸驗證或出界規則。
+網頁需網路載入 Three.js、cannon-es 及 Noto 字體。標楷體和 emoji 外觀依裝置，取樣、紋理與物理同步使用實際顯示字形。低解析碰撞與高解析顯示輪廓之間有近似誤差；攻守配置有取捨，但不宣稱所有 Unicode 字形與配對勝率已相同。第一版不含 LAN 或 3～8 人對戰。
