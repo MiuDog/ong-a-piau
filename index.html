@@ -1,0 +1,624 @@
+<!doctype html>
+<html lang="zh-Hant">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, initial-scale=1">
+		<title>尪仔標：硬幣版｜字形物理原型</title>
+		<link rel="icon" href="data:,">
+		<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@700&family=Noto+Serif+TC:wght@700&display=swap" rel="stylesheet">
+		<style>
+			:root { font-family: system-ui, sans-serif; color: #e9edf5; background: #10141d; color-scheme: dark; }
+			* { box-sizing: border-box; }
+			body { margin: 0; }
+			main { max-width: 1200px; margin: auto; padding: 24px; }
+			h1 { margin: 0 0 8px; font-size: 26px; }
+			p { color: #b8c3d4; line-height: 1.7; }
+			.layout { display: grid; grid-template-columns: 330px 1fr; gap: 20px; }
+			.panel { min-width: 0; background: #1a2230; border: 1px solid #354054; border-radius: 12px; padding: 18px; }
+			label { display: block; margin: 14px 0 6px; }
+			input, select, button { font: inherit; }
+			input[type="text"], select { width: 100%; padding: 10px; background: #101722; border: 1px solid #66768b; border-radius: 6px; }
+			input[type="range"] { width: 100%; accent-color: #7dc8e8; }
+			button { padding: 10px 12px; border: 1px solid #7dc8e8; border-radius: 6px; background: #263d50; color: #f0f7ff; cursor: pointer; }
+			button:disabled { opacity: .5; cursor: wait; }
+			button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #f0ca65; outline-offset: 3px; }
+			.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+			#glyph { width: 100%; aspect-ratio: 1; display: block; margin-top: 14px; background: #101722; border-radius: 8px; cursor: crosshair; touch-action: manipulation; }
+			.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 14px; }
+			.stat { background: #101722; border: 1px solid #354054; border-radius: 8px; padding: 12px; }
+			.stat strong { display: block; color: #7dc8e8; font-size: 22px; margin: 8px 0; }
+			.stat small { display: block; color: #b8c3d4; line-height: 1.6; }
+			#scene { height: 430px; position: relative; background: #101722; border-radius: 8px; overflow: hidden; }
+			#scene canvas { width: 100%; height: 100%; display: block; }
+			#status { min-height: 3em; margin-bottom: 0; }
+			.legend { font-size: 13px; }
+			details { margin-top: 18px; color: #b8c3d4; line-height: 1.7; }
+			@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } .stats { grid-template-columns: 1fr; } #scene { height: 350px; } main { padding: 14px; } #glyph { max-width: 260px; } }
+		</style>
+	</head>
+	<body>
+		<main>
+			<header>
+				<h1>尪仔標：硬幣版</h1>
+				<p>第一階段 · 字形物理測試。文字本身是一片有重量的物件，換字、換字體，再試著把它翻過來。</p>
+			</header>
+			<div class="layout">
+				<section class="panel" aria-label="字形設定">
+					<label for="text">文字或 emoji（最多 4 個字形）</label>
+					<input id="text" type="text" value="偏" maxlength="64" autocomplete="off">
+					<label for="font">字體</label>
+					<select id="font">
+						<option value="Noto Sans TC">黑體</option>
+						<option value="Noto Serif TC">明體</option>
+						<option value="DFKai-SB">標楷體（裝置字體）</option>
+					</select>
+					<div class="actions"><button id="generate" disabled>產生字形</button><button id="reset" disabled>重置薄片</button></div>
+					<canvas id="glyph" width="320" height="320" aria-label="字形與重心；點選筆畫設定施力位置"></canvas>
+					<p class="legend">黃色十字：重心 · 紅點：施力位置<br>點選字形上的位置，改變撞擊的槓桿。</p>
+					<label for="impulse">撬起衝量 <output id="impulse-value">0.60</output> N·s</label>
+					<input id="impulse" type="range" min="0.05" max="2" step="0.05" value="0.6">
+					<div class="actions"><button id="lift" disabled>撬起測試</button><button id="drop" disabled>落下撞擊</button></div>
+				</section>
+				<section class="panel" aria-label="物理測試結果">
+					<div class="stats">
+						<div class="stat">重量<strong id="mass">—</strong><small>kg · 同一密度下，像素越多越重；相同衝量造成的移動越小。</small></div>
+						<div class="stat">穩定度<strong id="stability">—</strong><small>J · 沿最容易翻倒的支撐邊，將重心抬至最高點的理論能量。</small></div>
+						<div class="stat">翻轉靈敏度<strong id="agility">—</strong><small>rad/s 每 N·s · 在所選位置向上施力，預期產生的初始角速度。</small></div>
+					</div>
+					<div id="scene" aria-label="三維字形物理場景"></div>
+					<p id="status" role="status" aria-live="polite">正在載入字體與物理引擎…</p>
+					<p class="legend">正面保留文字／emoji 色彩，背面灰白。落下撞擊使用同一顆測試球，從紅點正上方落下。數值使用模擬尺寸與密度。</p>
+					<details><summary>這一步在測試什麼？</summary><p>先驗證字形、質量、支撐與槓桿如何影響翻面。不同筆畫會固定為同一剛體；空白處没有碰撞形狀。字體不支援某字或 emoji 時使用裝置替代字形，畫面與物理皆取樣同一結果。此階段尚未加入三幣開局、回合、奪幣及電腦玩家。</p></details>
+				</section>
+			</div>
+		</main>
+		<script type="module">
+			let THREE, CANNON;
+			const config = {
+				/* grid：固定取樣邊長，限制最多 256 個碰撞格；size：字形框的模擬公尺數。
+				 * thickness：薄片厚度，確保具有正反面碰撞；density：材料密度，所有字形共用。
+				 * gravity：重力加速度，用於引擎及穩定能量；threshold：保留像素的平均 alpha 門檻。 */
+				grid: 16, size: 2.6, thickness: 0.14, density: 1, gravity: 9.81, threshold: 0.18
+			};
+			const state = {
+				/* model：目前取樣與質量資料；selected：施力像素索引；target：字形剛體。
+				 * world：物理世界；scene、camera、renderer：三維呈現；mesh：字形格實例。
+				 * marker：隨字形移動的重心標記；ball、ballMesh：可移除的落下撞擊測試球。
+				 * running、elapsed、quiet：結算時序；lastTime：動畫時間戳；busy：字體載入鎖。
+				 * generation：避免過期的非同步字體載入覆蓋新字形；floor：靜止及桌面接觸判定依據。 */
+				model: null, selected: 0, target: null, world: null, scene: null, camera: null, renderer: null,
+				mesh: null, marker: null, ball: null, ballMesh: null, running: false, elapsed: 0, quiet: 0,
+				lastTime: 0, busy: false, generation: 0, floor: null
+			};
+			// 動態映射契約：鍵為畫面元素 ID，值為對應 DOM 元素，集中管理設定與結果的存取。
+			const elements = Object.fromEntries(["text", "font", "generate", "reset", "glyph", "impulse", "impulse-value", "lift", "drop", "mass", "stability", "agility", "scene", "status"].map((id) => [id, document.getElementById(id)]));
+			const cache = new Map();
+			boot();
+
+			async function boot() {
+				try {
+					// 載入固定版本，讓單一 HTML 具備三維呈現及剛體碰撞能力。
+					[THREE, CANNON] = await Promise.all([import("https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js"), import("https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js")]);
+					setupScene();
+					bindControls();
+					await generate();
+					requestAnimationFrame(animate);
+				}
+				catch (error) {
+					elements.status.textContent = `無法啟動：${error.message}。請檢查網路與瀏覽器的 WebGL 支援，再重新整理。`;
+				}
+			}
+
+			function setupScene() {
+				// 建立有重力及有限迭代的物理世界，控制取樣成本。
+				state.world = new CANNON.World({ /* gravity：所有字形共用的重力。 */ gravity: new CANNON.Vec3(0, -config.gravity, 0) });
+				state.world.solver.iterations = 20;
+				state.world.defaultContactMaterial.friction = 0.4;
+				state.world.defaultContactMaterial.restitution = 0.1;
+				const floor = new CANNON.Body({ /* mass：零表示固定桌面；shape：不會漏接像素格的無限平面。 */ mass: 0, shape: new CANNON.Plane() });
+				floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
+				state.world.addBody(floor);
+				state.floor = floor;
+
+				// 建立固定視角，讓正反面及離桌高度容易觀察。
+				state.scene = new THREE.Scene();
+				state.scene.background = new THREE.Color("#101722");
+				state.camera = new THREE.PerspectiveCamera(42, 1, 0.1, 100);
+				state.camera.position.set(4.6, 6, 5.5);
+				state.camera.lookAt(0, 0.4, 0);
+				state.renderer = new THREE.WebGLRenderer({ /* antialias：減少薄片輪廓鋸齒。 */ antialias: true });
+				state.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+				elements.scene.append(state.renderer.domElement);
+				state.scene.add(new THREE.HemisphereLight(0xc8e8ff, 0x657082, 2.5));
+				const light = new THREE.DirectionalLight(0xffffff, 3);
+				light.position.set(3, 8, 4);
+				state.scene.add(light);
+				state.scene.add(new THREE.GridHelper(14, 28, 0x647891, 0x283548));
+				resize();
+				new ResizeObserver(resize).observe(elements.scene);
+			}
+
+			function bindControls() {
+				elements.generate.addEventListener("click", generate);
+				elements.reset.addEventListener("click", reset);
+				elements.lift.addEventListener("click", lift);
+				elements.drop.addEventListener("click", drop);
+				elements.glyph.addEventListener("pointerdown", selectPoint);
+				elements.impulse.addEventListener("input", () => { elements["impulse-value"].textContent = Number(elements.impulse.value).toFixed(2); });
+			}
+
+			async function generate() {
+				const text = elements.text.value.trim();
+				// 以完整字素辨識 emoji，防止把膚色或連接序列拆成多個字。
+				const count = [...new Intl.Segmenter("zh-Hant", { /* granularity：使用者看見的一個字形為一單位。 */ granularity: "grapheme" }).segment(text)].length;
+				if (count < 1 || count > 4) {
+					elements.status.textContent = "請輸入 1～4 個文字或 emoji。";
+					return;
+				}
+
+				state.busy = true;
+				setButtons();
+				elements.status.textContent = "正在載入所選字體並計算像素…";
+				const generation = ++state.generation;
+				const font = elements.font.value;
+				let fallback = false;
+				try {
+					// 等到實際字體就緒才取樣，保持畫面字形和物理資料一致。
+					const loaded = await Promise.race([document.fonts.load(`700 100px "${font}"`, text).catch(() => null), new Promise((resolve) => setTimeout(() => resolve(null), 12000))]);
+					fallback = !loaded || (font === "DFKai-SB" && !document.fonts.check(`100px "${font}"`));
+					const family = fallback ? "sans-serif" : `"${font}", sans-serif`;
+					const key = `${text}|${family}`;
+					const model = cache.get(key) || sampleGlyph(text, family);
+					cache.set(key, model);
+					if (generation !== state.generation) return;
+
+					state.model = model;
+					state.selected = farthestCell(model);
+					reset();
+					elements.status.textContent = `重心偏移 ${model.offset.toFixed(3)} m。${fallback ? "字體未就緒，已使用替代字體。" : "可點選字形，再測試撞擊。"}`;
+				}
+				catch (error) {
+					elements.status.textContent = `字形產生失敗：${error.message}`;
+				}
+				finally {
+					state.busy = false;
+					setButtons();
+				}
+			}
+
+			function sampleGlyph(text, family) {
+				// 步驟 1：使用同一張高解析字形圖取得各格平均 alpha。
+				const canvas = document.createElement("canvas");
+				canvas.width = canvas.height = 128;
+				const context = canvas.getContext("2d", { /* willReadFrequently：此画布用於像素讀回。 */ willReadFrequently: true });
+				context.font = `700 100px ${family}`;
+				const metric = context.measureText(text);
+				const width = Math.max(metric.width, metric.actualBoundingBoxLeft + metric.actualBoundingBoxRight);
+				const height = metric.actualBoundingBoxAscent + metric.actualBoundingBoxDescent;
+				const scale = 108 / Math.max(width, height, 1);
+				context.font = `700 ${100 * scale}px ${family}`;
+				const fitted = context.measureText(text);
+				context.fillStyle = "#7dc8e8";
+				context.fillText(text, 64 + (fitted.actualBoundingBoxLeft - fitted.actualBoundingBoxRight) / 2, 64 + (fitted.actualBoundingBoxAscent - fitted.actualBoundingBoxDescent) / 2);
+				const image = context.getImageData(0, 0, 128, 128);
+				const step = config.size / config.grid;
+				const cells = [];
+				for (let row = 0; row < config.grid; row++) {
+					for (let col = 0; col < config.grid; col++) {
+						let alpha = 0;
+						for (let y = row * 8; y < row * 8 + 8; y++) {
+							for (let x = col * 8; x < col * 8 + 8; x++) alpha += image.data[(y * 128 + x) * 4 + 3] / 255;
+						}
+						alpha /= 64;
+						if (alpha < config.threshold) continue;
+
+						cells.push({
+							/* x、z：以字形框中心為原點的桌面座標；mass：依 alpha 覆蓋率估算質量。
+							 * row、col：對應預覽格位置；alpha：保留透明邊缘覆蓋資訊。 */
+							x: (col + 0.5) * step - config.size / 2, z: (row + 0.5) * step - config.size / 2,
+							mass: alpha * step * step * config.thickness * config.density, row, col, alpha
+						});
+					}
+				}
+				if (!cells.length) throw new Error("沒有可用像素，請更換文字");
+
+				// 步驟 2：依實際像素質量求重心，不把幾何框中心當成旋轉中心。
+				const mass = cells.reduce((sum, cell) => sum + cell.mass, 0);
+				const cx = cells.reduce((sum, cell) => sum + cell.x * cell.mass, 0) / mass;
+				const cz = cells.reduce((sum, cell) => sum + cell.z * cell.mass, 0) / mass;
+				let xx = 0, zz = 0, xz = 0;
+				for (const cell of cells) {
+					xx += cell.mass * (cell.x - cx) ** 2;
+					zz += cell.mass * (cell.z - cz) ** 2;
+					xz += cell.mass * (cell.x - cx) * (cell.z - cz);
+				}
+				const angle = 0.5 * Math.atan2(2 * xz, xx - zz);
+				const cosine = Math.cos(angle), sine = Math.sin(angle);
+				const inertia = new CANNON.Vec3();
+				const base = mass * (step * step + config.thickness ** 2) / 12;
+				inertia.x = inertia.z = base;
+				inertia.y = mass * step * step / 6;
+				for (const cell of cells) {
+					const x = cell.x - cx, z = cell.z - cz;
+					const u = cosine * x + sine * z, v = -sine * x + cosine * z;
+					inertia.x += cell.mass * v * v;
+					inertia.z += cell.mass * u * u;
+					inertia.y += cell.mass * (u * u + v * v);
+				}
+
+				// 步驟 3：計算凸支撐邊界；空心字的承重边界也以整片剛體處理。
+				const corners = [];
+				for (const cell of cells) {
+					for (const dx of [-step / 2, step / 2]) {
+						for (const dz of [-step / 2, step / 2]) corners.push([cell.x + dx, cell.z + dz]);
+					}
+				}
+				const hull = convexHull(corners);
+				let support = Infinity;
+				for (let i = 0; i < hull.length; i++) {
+					const a = hull[i], b = hull[(i + 1) % hull.length];
+					const distance = Math.abs((b[0] - a[0]) * (cz - a[1]) - (b[1] - a[1]) * (cx - a[0])) / Math.hypot(b[0] - a[0], b[1] - a[1]);
+					support = Math.min(support, distance);
+				}
+				return {
+					/* cells：有效像素及碰撞來源；mass：總質量；cx、cz：字形重心。
+					 * angle：主慣性軸角度；inertia：主軸慣量，直接供引擎求解。
+					 * step：像素實體邊長；hull、support：支撐輪廓及最短力臂。
+					 * stability：繞最弱支撐邊抬高重心的能量；offset：重心距字形框中心的距離。
+					 * canvas：原始字形彩色紋理；contours：高解析輪廓，只用於顯示，不增加碰撞格。 */
+					cells, mass, cx, cz, angle, inertia, step, hull, support,
+					stability: mass * config.gravity * (Math.hypot(support, config.thickness / 2) - config.thickness / 2), offset: Math.hypot(cx, cz), canvas, contours: traceContours(image)
+				};
+			}
+
+			function convexHull(points) {
+				const sorted = [...new Map(points.map((point) => [point.join(","), point])).values()].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+				const lower = [], upper = [];
+				for (const point of sorted) {
+					while (lower.length > 1 && cross(lower.at(-2), lower.at(-1), point) <= 0) lower.pop();
+					lower.push(point);
+				}
+				for (const point of [...sorted].reverse()) {
+					while (upper.length > 1 && cross(upper.at(-2), upper.at(-1), point) <= 0) upper.pop();
+					upper.push(point);
+				}
+				return lower.slice(0, -1).concat(upper.slice(0, -1));
+			}
+
+			function cross(a, b, c) {
+				return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+			}
+
+			function farthestCell(model) {
+				let index = 0, distance = -1;
+				model.cells.forEach((cell, i) => {
+					const next = Math.hypot(cell.x - model.cx, cell.z - model.cz);
+					if (next > distance) { index = i; distance = next; }
+				});
+				return index;
+			}
+
+			function reset() {
+				if (!state.model) return;
+
+				// 清除上一輪資源，避免反覆產生字形累積剛體與 GPU 材質。
+				clearBody(state.target, state.mesh);
+				clearBody(state.ball, state.ballMesh);
+				if (state.marker) {
+					state.scene.remove(state.marker);
+					state.marker.geometry.dispose();
+					state.marker.material.dispose();
+				}
+				state.ball = state.ballMesh = null;
+				const model = state.model;
+				const body = new CANNON.Body({
+					/* mass：像素總質量；linearDamping、angularDamping：共同空氣耗散。
+					 * allowSleep、sleepSpeedLimit、sleepTimeLimit：停止偵測與性能控制。 */
+					mass: model.mass, linearDamping: 0.1, angularDamping: 0.1, allowSleep: true, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.6
+				});
+				const orientation = new CANNON.Quaternion();
+				orientation.setFromEuler(0, model.angle, 0);
+				for (const cell of model.cells) {
+					const point = localPoint(cell, model);
+					body.addShape(new CANNON.Box(new CANNON.Vec3(model.step / 2, config.thickness / 2, model.step / 2)), point, orientation);
+				}
+				// 覆寫引擎的包圍盒慣量，以主軸像素積分慣量真實影響旋轉求解。
+				body.inertia.copy(model.inertia);
+				body.invInertia.set(1 / model.inertia.x, 1 / model.inertia.y, 1 / model.inertia.z);
+				body.position.set(model.cx, config.thickness / 2 + 0.003, model.cz);
+				body.quaternion.setFromEuler(0, -model.angle, 0);
+				body.updateInertiaWorld(true);
+				body.updateSolveMassProperties();
+				state.world.addBody(body);
+				state.target = body;
+				state.mesh = makeGlyphMesh(model);
+				state.scene.add(state.mesh);
+				state.marker = new THREE.Mesh(new THREE.SphereGeometry(0.045), new THREE.MeshBasicMaterial({ /* color：固定重心標記色。 */ color: 0xf0ca65 }));
+				state.scene.add(state.marker);
+				state.running = false;
+				state.elapsed = state.quiet = 0;
+				updateStats();
+				drawPreview();
+				syncMeshes();
+				elements.status.textContent = "薄片已重置，請選擇施力位置並測試。";
+				setButtons();
+			}
+
+			function localPoint(cell, model) {
+				const x = cell.x - model.cx, z = cell.z - model.cz;
+				return new CANNON.Vec3(Math.cos(model.angle) * x + Math.sin(model.angle) * z, 0, -Math.sin(model.angle) * x + Math.cos(model.angle) * z);
+			}
+
+			function makeGlyphMesh(model) {
+				// 步驟 1：高解析輪廓保留筆畫及孔洞；碰撞格完全不參與畫面繪製。
+				const outers = model.contours.filter((loop) => polygonArea(loop) > 0);
+				const holes = model.contours.filter((loop) => polygonArea(loop) < 0);
+				const shapes = outers.map((loop) => makePath(loop, model, true));
+				for (const hole of holes) {
+					let owner = -1, smallest = Infinity;
+					outers.forEach((outer, index) => {
+						const area = polygonArea(outer);
+						if (area < smallest && pointInPolygon(hole[0], outer)) { owner = index; smallest = area; }
+					});
+					if (owner >= 0) shapes[owner].holes.push(makePath(hole, model, false));
+				}
+				const geometry = new THREE.ExtrudeGeometry(shapes, {
+					/* depth：與碰撞一致的厚度；bevelEnabled：不額外膨脹輪廓；steps：薄片單層擠出。 */
+					depth: config.thickness, bevelEnabled: false, steps: 1
+				});
+
+				// 步驟 2：先設定整張字形紋理座標，再轉到桌面與主慣性軸座標系。
+				const positions = geometry.getAttribute("position"), uv = geometry.getAttribute("uv");
+				for (let i = 0; i < positions.count; i++) uv.setXY(i, (positions.getX(i) + model.cx) / config.size + 0.5, (positions.getY(i) - model.cz) / config.size + 0.5);
+				geometry.translate(0, 0, -config.thickness / 2);
+				geometry.rotateX(-Math.PI / 2);
+				geometry.rotateY(model.angle);
+				geometry.clearGroups();
+				const normals = geometry.getAttribute("normal");
+				let groupStart = 0, groupMaterial = -1;
+				for (let i = 0; i < positions.count; i += 3) {
+					let materialIndex = 2;
+					if (normals.getY(i) > 0.8) materialIndex = 0;
+					else if (normals.getY(i) < -0.8) materialIndex = 1;
+					if (materialIndex !== groupMaterial) {
+						if (groupMaterial >= 0) geometry.addGroup(groupStart, i - groupStart, groupMaterial);
+						groupStart = i;
+						groupMaterial = materialIndex;
+					}
+				}
+				geometry.addGroup(groupStart, positions.count - groupStart, groupMaterial);
+				const texture = new THREE.CanvasTexture(model.canvas);
+				texture.colorSpace = THREE.SRGBColorSpace;
+				const top = new THREE.MeshStandardMaterial({ /* map：原始文字與 emoji 色彩；alphaTest：裁掉抗鋸齒透明邊。 */ map: texture, alphaTest: 0.1 });
+				const bottom = new THREE.MeshStandardMaterial({ /* color：翻面後可辨識的背面色。 */ color: 0xd0d3da });
+				const side = new THREE.MeshStandardMaterial({ /* color：擠出的筆畫側面。 */ color: 0x43839d });
+				return new THREE.Mesh(geometry, [top, bottom, side]);
+			}
+
+			function traceContours(image) {
+				const edges = new Map();
+				const opaque = (x, y) => x >= 0 && y >= 0 && x < image.width && y < image.height && image.data[(y * image.width + x) * 4 + 3] / 255 >= config.threshold;
+				const add = (start, end) => {
+					const key = start.join(",");
+					if (!edges.has(key)) edges.set(key, []);
+					edges.get(key).push(end);
+				};
+				// 只建立字形內外邊界，沿填色區右側追蹤，區分外框與孔洞。
+				for (let y = 0; y < image.height; y++) {
+					for (let x = 0; x < image.width; x++) {
+						if (!opaque(x, y)) continue;
+
+						if (!opaque(x, y - 1)) add([x, y], [x + 1, y]);
+						if (!opaque(x + 1, y)) add([x + 1, y], [x + 1, y + 1]);
+						if (!opaque(x, y + 1)) add([x + 1, y + 1], [x, y + 1]);
+						if (!opaque(x - 1, y)) add([x, y + 1], [x, y]);
+					}
+				}
+				const loops = [];
+				while (edges.size) {
+					const start = edges.keys().next().value.split(",").map(Number);
+					const loop = [start];
+					let previous = null, current = start;
+					let remaining = image.width * image.height * 4;
+					do {
+						const key = current.join(",");
+						const candidates = edges.get(key);
+						if (!candidates?.length) break;
+
+						let index = 0;
+						if (previous && candidates.length > 1) {
+							index = candidates.findIndex((next) => cross(previous, current, next) > 0);
+							if (index < 0) index = 0;
+						}
+						const next = candidates.splice(index, 1)[0];
+						if (!candidates.length) edges.delete(key);
+						previous = current;
+						current = next;
+						if (current[0] !== start[0] || current[1] !== start[1]) loop.push(current);
+					}
+					while ((current[0] !== start[0] || current[1] !== start[1]) && --remaining > 0);
+					if (loop.length >= 3 && current[0] === start[0] && current[1] === start[1]) loops.push(simplifyLoop(loop));
+				}
+				return loops;
+			}
+
+			function simplifyLoop(loop) {
+				const kept = loop.filter((point, index) => cross(loop[(index + loop.length - 1) % loop.length], point, loop[(index + 1) % loop.length]) !== 0);
+				return kept.length >= 3 ? kept : loop;
+			}
+
+			function polygonArea(loop) {
+				return loop.reduce((sum, point, index) => {
+					const next = loop[(index + 1) % loop.length];
+					return sum + point[0] * next[1] - next[0] * point[1];
+				}, 0) / 2;
+			}
+
+			function pointInPolygon(point, loop) {
+				let inside = false;
+				for (let i = 0, j = loop.length - 1; i < loop.length; j = i++) {
+					const a = loop[i], b = loop[j];
+					if ((a[1] > point[1]) !== (b[1] > point[1]) && point[0] < (b[0] - a[0]) * (point[1] - a[1]) / (b[1] - a[1]) + a[0]) inside = !inside;
+				}
+				return inside;
+			}
+
+			function makePath(loop, model, outer) {
+				const path = outer ? new THREE.Shape() : new THREE.Path();
+				loop.forEach((point, index) => {
+					const x = (point[0] / 128 - 0.5) * config.size - model.cx;
+					const y = -(point[1] / 128 - 0.5) * config.size + model.cz;
+					if (index === 0) path.moveTo(x, y);
+					else path.lineTo(x, y);
+				});
+				path.closePath();
+				return path;
+			}
+
+			function clearBody(body, mesh) {
+				if (body) state.world.removeBody(body);
+				if (!mesh) return;
+
+				state.scene.remove(mesh);
+				mesh.geometry.dispose();
+				const materials = Array.isArray(mesh.material) ? [...new Set(mesh.material)] : [mesh.material];
+				materials.forEach((material) => { if (material.map) material.map.dispose(); material.dispose(); });
+			}
+
+			function updateStats() {
+				const model = state.model;
+				const point = localPoint(model.cells[state.selected], model);
+				// τ = r × J、Δω = I⁻¹τ：畫面數值直接對應引擎使用的慣量。
+				const agility = Math.hypot(point.z / model.inertia.x, point.x / model.inertia.z);
+				elements.mass.textContent = model.mass.toFixed(3);
+				elements.stability.textContent = model.stability.toFixed(3);
+				elements.agility.textContent = agility.toFixed(2);
+			}
+
+			function drawPreview() {
+				const context = elements.glyph.getContext("2d");
+				const model = state.model;
+				context.clearRect(0, 0, 320, 320);
+				// 預覽也顯示完整字形，像素格只保留在背景計算。
+				context.drawImage(model.canvas, 0, 0, 320, 320);
+				const selected = model.cells[state.selected];
+				context.fillStyle = "#f07e72";
+				context.beginPath();
+				context.arc(selected.col * 20 + 10, selected.row * 20 + 10, 6, 0, Math.PI * 2);
+				context.fill();
+				const x = (model.cx / config.size + 0.5) * 320, y = (model.cz / config.size + 0.5) * 320;
+				context.strokeStyle = "#f0ca65";
+				context.lineWidth = 3;
+				context.beginPath();
+				context.moveTo(x - 8, y);
+				context.lineTo(x + 8, y);
+				context.moveTo(x, y - 8);
+				context.lineTo(x, y + 8);
+				context.stroke();
+			}
+
+			function selectPoint(event) {
+				if (!state.model || state.busy || state.running) return;
+
+				const rect = elements.glyph.getBoundingClientRect();
+				const col = Math.floor((event.clientX - rect.left) / rect.width * config.grid);
+				const row = Math.floor((event.clientY - rect.top) / rect.height * config.grid);
+				const index = state.model.cells.findIndex((cell) => cell.row === row && cell.col === col);
+				if (index < 0) { elements.status.textContent = "此處是空白，請點選有筆畫的位置。"; return; }
+
+				state.selected = index;
+				updateStats();
+				drawPreview();
+			}
+
+			function lift() {
+				reset();
+				const point = localPoint(state.model.cells[state.selected], state.model);
+				const worldOffset = state.target.quaternion.vmult(point);
+				const impulse = Number(elements.impulse.value);
+				state.target.wakeUp();
+				// 在選定力臂施加同一衝量，由剛體公式決定平移與旋轉。
+				state.target.applyImpulse(new CANNON.Vec3(0, impulse, 0), worldOffset);
+				state.running = true;
+				elements.status.textContent = `已施力：初始角速度 ${state.target.angularVelocity.length().toFixed(2)} rad/s，預測值 ${(Number(elements.agility.textContent) * impulse).toFixed(2)} rad/s。`;
+				setButtons();
+			}
+
+			function drop() {
+				reset();
+				const cell = state.model.cells[state.selected];
+				state.ball = new CANNON.Body({ /* mass、shape：固定測試球，便於比較字形；position：所選像素上方固定高度。 */ mass: 0.25, shape: new CANNON.Sphere(0.16), position: new CANNON.Vec3(cell.x, 2.8, cell.z) });
+				state.world.addBody(state.ball);
+				state.ballMesh = new THREE.Mesh(new THREE.SphereGeometry(0.16), new THREE.MeshStandardMaterial({ /* color：測試球辨識色。 */ color: 0xf0ca65 }));
+				state.scene.add(state.ballMesh);
+				state.running = true;
+				elements.status.textContent = "測試球正在落下，等待真實接觸求解與薄片停止…";
+				setButtons();
+			}
+
+			function setButtons() {
+				elements.generate.disabled = state.busy;
+				elements.reset.disabled = !state.model || state.busy;
+				elements.lift.disabled = elements.drop.disabled = !state.model || state.busy || state.running;
+			}
+
+			function syncMeshes() {
+				if (!state.target) return;
+
+				state.mesh.position.copy(state.target.position);
+				state.mesh.quaternion.copy(state.target.quaternion);
+				const marker = state.target.pointToWorldFrame(new CANNON.Vec3(0, config.thickness / 2 + 0.055, 0));
+				state.marker.position.copy(marker);
+				if (state.ballMesh) {
+					state.ballMesh.position.copy(state.ball.position);
+					state.ballMesh.quaternion.copy(state.ball.quaternion);
+				}
+			}
+
+			function animate(time) {
+				const delta = state.lastTime ? Math.min((time - state.lastTime) / 1000, 0.05) : 0;
+				state.lastTime = time;
+				// 固定物理步長，讓畫面刷新率不直接改變物理參數。
+				state.world.step(1 / 120, delta, 6);
+				if (state.running) {
+					state.elapsed += delta;
+					state.quiet = isResting() ? state.quiet + delta : 0;
+					if (state.elapsed > 1 && state.quiet > 0.6) settle();
+					else if (state.elapsed > 10) {
+						state.running = false;
+						elements.status.textContent = "仍在移動，暫不判定翻面；可重置後再測試。";
+						setButtons();
+					}
+				}
+				syncMeshes();
+				state.renderer.render(state.scene, state.camera);
+				requestAnimationFrame(animate);
+			}
+
+			function settle() {
+				if (!isResting()) return;
+
+				state.running = false;
+				const normal = state.target.quaternion.vmult(new CANNON.Vec3(0, 1, 0));
+				let result = "側立或傾斜，暫不計翻面";
+				if (normal.y > 0.85) result = "正面朝上，沒有翻面";
+				else if (normal.y < -0.85) result = "背面朝上，翻面成功";
+				elements.status.textContent = `停止結果：${result}。`;
+				setButtons();
+			}
+
+			function isResting() {
+				if (state.target.velocity.length() >= 0.08 || state.target.angularVelocity.length() >= 0.08) return false;
+
+				return state.world.contacts.some((contact) => (contact.bi === state.target && contact.bj === state.floor) || (contact.bj === state.target && contact.bi === state.floor));
+			}
+
+			function resize() {
+				const width = elements.scene.clientWidth, height = elements.scene.clientHeight;
+				state.camera.aspect = width / height;
+				state.camera.updateProjectionMatrix();
+				state.renderer.setSize(width, height);
+			}
+		</script>
+	</body>
+</html>
