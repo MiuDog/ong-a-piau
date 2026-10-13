@@ -181,7 +181,7 @@
 				 * status：setup/ready/simulating/won；winner：未分勝負時為 null；coins：唯一六枚。
 				 * selectedId、thrownId：選中與本次投出枚；aim：桌面瞄準座標；angleDegrees：唯一可調的投擲仰角。
 				 * turn、elapsed、quiet：回合與靜止時間；epoch：隔離舊非同步與計時器。
-				 * cpuTimer：目前 AI 計時器；players：名稱與顏色。
+				 * cpuTimer：目前 AI 計時器；turnTimer、turnDeadline：獨立回合逾時計時器及真實時間截止，避免低幀率卡手；players：名稱與顏色。
 				 * walls：保留清理舊牆的空集合；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。
 				 * contacts：本步真實接觸及局部力臂，求解結束後才施加遊戲助推。
 				 * floorMaterial：遊戲地面材質；effects：純視覺捕獲及落地衝擊特效，不參與物理與勝負。
@@ -189,7 +189,7 @@
 				 * lastGroundImpact：震波範圍、能量及受影響枚，供背景驗證，不參與判面。 */
 				active: false, mode: "cpu", current: 0, thrower: 0, status: "setup", winner: null, coins: [],
 				selectedId: null, thrownId: null, aim: null, angleDegrees: 35, turn: 1, elapsed: 0, quiet: 0,
-				epoch: 0, cpuTimer: null, players: [], walls: [], aimMesh: null, log: [], contacts: [], floorMaterial: null, drag: null, effects: [], swipeSpeed: 0.5, groundImpactUsed: false, lastGroundImpact: null
+				epoch: 0, cpuTimer: null, turnTimer: null, turnDeadline: 0, players: [], walls: [], aimMesh: null, log: [], contacts: [], floorMaterial: null, drag: null, effects: [], swipeSpeed: 0.5, groundImpactUsed: false, lastGroundImpact: null
 			};
 			boot();
 
@@ -841,39 +841,15 @@
 			function fitBattleCamera() {
 				if (!game.active || !state.camera.isOrthographicCamera) return;
 
-				let minX = -5.5, maxX = 5.5, minZ = -4, maxZ = 4;
-				for (const coin of game.coins) {
-					if (!coin.body) continue;
-
-					coin.body.updateAABB();
-					const box = coin.body.aabb;
-					minX = Math.min(minX, box.lowerBound.x - 1);
-					maxX = Math.max(maxX, box.upperBound.x + 1);
-					minZ = Math.min(minZ, box.lowerBound.z - 1);
-					maxZ = Math.max(maxZ, box.upperBound.z + 1);
-				}
+				// 固定世界中心與視野，不因投擲、爆炸或散開的薄片平移／縮放。
 				const board = getGameElement("game-board"), aspect = Math.max(1, board.clientWidth) / Math.max(1, board.clientHeight);
-				if (game.status === "simulating" && game.aim) {
-					minX = Math.min(minX, game.aim.x - 1);
-					maxX = Math.max(maxX, game.aim.x + 1);
-					minZ = Math.min(minZ, game.aim.z - 1);
-					maxZ = Math.max(maxZ, game.aim.z + 1);
-				}
-				for (const effect of game.effects) {
-					const radius = effect.radius || 2;
-					minX = Math.min(minX, effect.group.position.x - radius);
-					maxX = Math.max(maxX, effect.group.position.x + radius);
-					minZ = Math.min(minZ, effect.group.position.z - radius);
-					maxZ = Math.max(maxZ, effect.group.position.z + radius);
-				}
-				const halfZ = Math.max((maxZ - minZ) / 2, (maxX - minX) / (2 * aspect));
-				const halfX = halfZ * aspect;
+				const halfZ = Math.max(7, 9 / aspect), halfX = halfZ * aspect;
 				state.camera.left = -halfX;
 				state.camera.right = halfX;
 				state.camera.top = halfZ;
 				state.camera.bottom = -halfZ;
-				state.camera.position.set((minX + maxX) / 2, 40, (minZ + maxZ) / 2 + 40 * Math.tan(Math.PI / 12));
-				state.camera.lookAt((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
+				state.camera.position.set(0, 40, 40 * Math.tan(Math.PI / 12));
+				state.camera.lookAt(0, 0, 0);
 				state.camera.updateProjectionMatrix();
 			}
 
@@ -930,6 +906,7 @@
 				const epoch = ++game.epoch;
 				clearTimeout(game.cpuTimer);
 				game.cpuTimer = null;
+				clearGameTurnTimer();
 				game.status = "setup";
 				getGameElement("start-game").disabled = getGameElement("restart-game").disabled = true;
 				getGameElement("setup-status").textContent = "正在建立六枚 3D 字形…";
@@ -1016,6 +993,7 @@
 			}
 
 			function clearGameBodies() {
+				clearGameTurnTimer();
 				clearCaptureEffects();
 				game.contacts = [];
 				for (const coin of game.coins) removeGameBody(coin);
@@ -1174,9 +1152,29 @@
 				state.scene.add(coin.mesh);
 				game.status = "simulating";
 				game.quiet = game.elapsed = 0;
+				armGameTurnTimer();
 				fitBattleCamera();
-				updateGameUI(`${game.players[game.thrower].name}投出「${coin.text}」，等待落地結果…`);
+				updateGameUI(`${game.players[game.thrower].name}投出「${coin.text}」，等待落地結果（最長12秒）…`);
 				return true;
+			}
+
+			function clearGameTurnTimer() {
+				clearTimeout(game.turnTimer);
+				game.turnTimer = null;
+				game.turnDeadline = 0;
+			}
+
+			function armGameTurnTimer() {
+				clearGameTurnTimer();
+
+				// 世代、回合及投出枚一起核對，過期回呼不能切換新局或下一手。
+				const epoch = game.epoch, turn = game.turn, thrownId = game.thrownId;
+				game.turnDeadline = Date.now() + 12000;
+				game.turnTimer = setTimeout(() => {
+					if (epoch !== game.epoch || turn !== game.turn || thrownId !== game.thrownId || !game.active || game.status !== "simulating") return;
+
+					finishGameTurn(true);
+				}, 12000);
 			}
 
 			function glyphPhysicsProfile(model) {
@@ -1433,6 +1431,7 @@
 				const board = game.coins.filter((coin) => coin.body);
 				if (!force && !board.every(isGameCoinResting)) return false;
 
+				clearGameTurnTimer();
 				const thrower = game.thrower;
 				// 先快照所有可捕獲枚，再移除，避免先移除下層影響同時結算。
 				const captured = board.filter((coin) => coin.owner !== thrower && coin.id !== game.thrownId && coin.hit && coin.faceBeforeThrow !== 0 && stableGameFace(coin) === -coin.faceBeforeThrow);
@@ -1742,7 +1741,7 @@
 				const board = game.coins.filter((coin) => coin.body);
 				game.quiet = board.every(isGameCoinResting) ? game.quiet + delta : 0;
 				if (game.elapsed > 0.45 && game.quiet > 0.5) finishGameTurn();
-				else if (game.elapsed > 35) finishGameTurn(true);
+				else if (game.turnDeadline && Date.now() >= game.turnDeadline) finishGameTurn(true);
 			}
 		</script>
 	</body>

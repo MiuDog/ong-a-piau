@@ -18,6 +18,7 @@ async function main() {
 		const result = await page.evaluate(runChecks);
 		await pointerUiCheck(page);
 		await flickSpeedCheck(page);
+		await cameraResizeCheck(page);
 		assert.deepEqual(errors, [], "遊戲頁不得發生執行錯誤");
 		assert.deepEqual(result.failures, [], result.failures.join("\n"));
 		console.log(JSON.stringify(result, null, 2));
@@ -31,7 +32,7 @@ async function instrumentRoute(route) {
 
 	// 只暴露測試接點，不更改規則、判面或碰撞處理。
 	const response = await route.fetch();
-	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, makeGlyphMesh, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, glyphPhysicsProfile, handleGameContact, flushGameContacts, applyGroundImpact, animateCaptureEffects, localPoint }; </script>";
+	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, makeGlyphMesh, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, glyphPhysicsProfile, handleGameContact, flushGameContacts, applyGroundImpact, animateCaptureEffects, animateGame, fitBattleCamera, leaveGame, localPoint }; </script>";
 	const html = (await response.text()).replace("</script>", expose);
 	await route.fulfill({ /* response：保留原回應；body：唯此測試可見的接點。 */ response, body: html });
 }
@@ -112,6 +113,32 @@ async function flickSpeedCheck(page) {
 	const gain = (speed) => 0.8 + 0.4 * Math.max(0, Math.min(3, speed));
 	assert.ok(Math.abs(launches[0].velocity / launches[1].velocity - gain(launches[0].gesture) / gain(launches[1].gesture)) < 1e-8, "真正初速度倍率必須由量到的手勢速度推導");
 	console.log("同路徑快慢拖曳：手勢時間與真正發射速度連動通過");
+}
+
+async function cameraResizeCheck(page) {
+	const originalViewport = page.viewportSize();
+	try {
+		await page.evaluate(async () => { document.getElementById("mode").value = "local"; await window.__game.startGame(); });
+		const snapshots = [];
+		for (const viewport of [{ width: 1280, height: 720 }, { width: 760, height: 900 }]) {
+			await page.setViewportSize(viewport);
+			snapshots.push(await page.evaluate(() => {
+				const { state, game, fitBattleCamera } = window.__game;
+				fitBattleCamera();
+				state.camera.updateMatrixWorld(true);
+				const board = document.getElementById("game-board");
+				return { /* pose、projection：真相機矩陣；direction：保持15度；aspect、right、top：投影只由視窗長寬比推導。 */ pose: state.camera.matrixWorld.toArray(), projection: state.camera.projectionMatrix.toArray(), direction: state.camera.getWorldDirection(game.aim.clone()).toArray(), aspect: board.clientWidth / board.clientHeight, right: state.camera.right, top: state.camera.top };
+			}));
+		}
+		assert.deepEqual(snapshots[0].pose, snapshots[1].pose, "調整視窗只可改投影，不可移動場景座標原點或鏡頭姿態");
+		assert.notDeepEqual(snapshots[0].projection, snapshots[1].projection, "不同視窗比例必須真正更新正交投影");
+		for (const snapshot of snapshots) {
+			assert.ok(Math.abs(snapshot.top - Math.max(7, 9 / snapshot.aspect)) < 1e-8 && Math.abs(snapshot.right - snapshot.top * snapshot.aspect) < 1e-8, "正交可視範圍只能依固定基準與視窗比例計算");
+			assert.ok(Math.abs(snapshot.direction[1] + Math.cos(Math.PI / 12)) < 1e-8 && Math.abs(snapshot.direction[2] + Math.sin(Math.PI / 12)) < 1e-8, "resize 後仍須維持15度傾角");
+		}
+		console.log("固定鏡頭：resize 只改正交投影，原點與15度姿態不變");
+	}
+	finally { await page.setViewportSize(originalViewport); }
 }
 
 async function runChecks() {
@@ -262,7 +289,7 @@ async function runChecks() {
 	}
 
 	function settleGameBodies() {
-		// 高彈性允許較長真步進；仍逐枚要求原速度與真支撐條件，最多遊戲同款35秒。
+		// 純物理fixture最多35秒真步進；仍逐枚要求原速度與真支撐條件，與真時間回合逾時分開驗。
 		for (let tick = 0; tick < 4200; tick++) {
 			step(1);
 			if (api.game.coins.every((coin) => !coin.body || api.isGameCoinResting(coin))) return;
@@ -1032,6 +1059,97 @@ async function runChecks() {
 		near(body.position.z + body.velocity.z * time, -100, "遠方 z 瞄準不得夾限");
 		assertSix();
 	}
+	async function fixedCameraCheck() {
+		for (const roll of [0.9, 0.1]) {
+			await newGame();
+			Math.random = () => roll;
+			const camera = api.state.camera;
+			function snapshotCamera() {
+				camera.updateMatrixWorld(true);
+				return JSON.stringify([camera.matrixWorld.toArray(), camera.projectionMatrix.toArray()]);
+			}
+			near(camera.position.x, 0, "固定鏡頭橫軸必須錨定原點");
+			near(camera.position.y, 40, "固定鏡頭高度不可隨場上枚改變");
+			near(camera.position.z, 40 * Math.tan(Math.PI / 12), "固定鏡頭縱向偏移須保持15度");
+			const original = snapshotCamera(), source = owned(0)[0];
+			api.game.aim.set(100, 0, -100);
+			requireCondition(api.selectGameCoin(source.id) && api.throwGameCoin(), "固定鏡頭案例須真正投出遠方薄片");
+			requireCondition(snapshotCamera() === original, "投擲遠方落點不得改變相機姿態或投影");
+			for (let tick = 0; tick < 600 && !api.game.groundImpactUsed; tick++) step(1);
+			requireCondition(api.game.lastGroundImpact?.explosive === (roll < 0.25), "相機案例必須真正產生普通或爆炸落地效果");
+			requireCondition(snapshotCamera() === original, "普通震波或大爆炸不得帶動相機");
+			source.body.position.set(-120, 4, 130);
+			source.body.velocity.set(2, 1, -3);
+			source.body.wakeUp();
+			source.body.aabbNeedsUpdate = true;
+			api.fitBattleCamera();
+			requireCondition(snapshotCamera() === original, "薄片散到遠方後重新適配也不得平移或縮放場景");
+			settleGameBodies();
+			api.finishGameTurn();
+			requireCondition(api.game.status === "ready" && snapshotCamera() === original, "真正停妥換手後鏡頭仍必須完全不變");
+		}
+	}
+
+	async function turnDeadlineCheck() {
+		await newGame();
+		const originalSetTimeout = window.setTimeout, originalClearTimeout = window.clearTimeout, originalNow = Date.now;
+		const timers = new Map();
+		let nextId = 100000, now = originalNow();
+		window.setTimeout = (callback, delay, ...args) => {
+			const id = nextId++;
+			timers.set(id, { /* callback：可控原生排程回呼；delay：檢查真12秒；cleared：驗證生命週期清理。 */ callback: () => callback(...args), delay, cleared: false });
+			return id;
+		};
+		window.clearTimeout = (id) => { if (timers.has(id)) timers.get(id).cleared = true; else originalClearTimeout(id); };
+		Date.now = () => now;
+		try {
+			const enemy = owned(1)[0];
+			place(enemy, -3);
+			settleGameBodies();
+			const source = beginThrow(), firstId = api.game.turnTimer, first = timers.get(firstId), initialTurn = api.game.turn;
+			requireCondition(first?.delay === 12000 && api.game.turnDeadline === now + 12000, "成功出手必須設定原生12秒計時與真實時間截止");
+			backface(enemy);
+			enemy.hit = true;
+			enemy.body.velocity.set(2, 0, 0);
+			requireCondition(enemy.faceBeforeThrow === 1 && !api.isGameCoinResting(enemy), "逾時移動排除須有真初始基準且仍在運動");
+			now += 12000;
+			first.callback();
+			requireCondition(api.game.status === "ready" && api.game.current === 1 && api.game.turn === initialTurn + 1, "原生計時到期必須切換一次真回合");
+			requireCondition(enemy.owner === 1 && enemy.body && captureEffects().length === 0, "逾時不能捕獲尚在運動的背面敵枚");
+			requireCondition(api.game.turnTimer == null && api.game.turnDeadline === 0 && first.cleared, "到期結算須清除計時器與截止時間");
+			first.callback();
+			requireCondition(api.game.turn === initialTurn + 1, "同一到期回呼重入不可多切一手");
+			const secondSource = beginThrow(), second = timers.get(api.game.turnTimer), secondTurn = api.game.turn;
+			first.callback();
+			requireCondition(api.game.status === "simulating" && api.game.turn === secondTurn && api.game.thrownId === secondSource.id, "上一手回呼不能提前結束新一手");
+			api.game.elapsed = 0;
+			now = api.game.turnDeadline;
+			api.animateGame(0.0001);
+			requireCondition(api.game.status === "ready" && api.game.turn === secondTurn + 1 && second.cleared, "低幀率僅一個微小delta，真時間到期仍須換手");
+			second.callback();
+			requireCondition(api.game.turn === secondTurn + 1, "動畫截止與原生回呼競爭不得重複換手");
+			beginThrow();
+			const restartTimer = timers.get(api.game.turnTimer), oldEpoch = api.game.epoch;
+			await newGame();
+			restartTimer.callback();
+			requireCondition(restartTimer.cleared && api.game.epoch > oldEpoch && api.game.status === "ready" && api.game.current === 0 && api.game.turnTimer == null && api.game.turnDeadline === 0, "重開須取消舊計時器且過期回呼不能污染新局");
+			beginThrow();
+			const leaveTimer = timers.get(api.game.turnTimer);
+			api.leaveGame();
+			const leftTurn = api.game.turn;
+			leaveTimer.callback();
+			requireCondition(leaveTimer.cleared && !api.game.active && api.game.turn === leftTurn && api.game.turnTimer == null && api.game.turnDeadline === 0, "離開後舊計時回呼不得復活對局或換手");
+			await newGame();
+			const finalSource = beginThrow(), normalTimer = timers.get(api.game.turnTimer);
+			place(finalSource);
+			settleGameBodies();
+			api.finishGameTurn();
+			requireCondition(normalTimer.cleared && api.game.status === "ready" && api.game.turnTimer == null && api.game.turnDeadline === 0, "正常停妥結算也必須清理逾時計時器");
+			assertSix();
+		}
+		finally { window.setTimeout = originalSetTimeout; window.clearTimeout = originalClearTimeout; Date.now = originalNow; }
+	}
+
 	async function spawnSafetyCheck() {
 		for (const fromBoard of [false, true]) {
 			await newGame();
@@ -1052,6 +1170,7 @@ async function runChecks() {
 			const turn = api.game.turn, current = api.game.current, thrownId = api.game.thrownId;
 			requireCondition(!api.throwGameCoin(), "所有出生方向都與既有薄片重疊時必須拒絕，不能先拿起原牌");
 			requireCondition(api.game.status === "ready" && api.game.turn === turn && api.game.current === current && api.game.thrownId === thrownId, "拒絕出生不得開始或消耗回合");
+			requireCondition(api.game.turnTimer == null && api.game.turnDeadline === 0, "拒絕投擲不得建立回合逾時計時器");
 			requireCondition(api.game.coins.every((coin, index) => coin.body === beforeBodies[index]), "拒絕出生不得刪除或替換任何桌面剛體");
 			requireCondition(api.state.world.bodies.length === worldBodies.length && worldBodies.every((body) => api.state.world.bodies.includes(body)), "拒絕後物理世界必須維持原物件集合");
 			requireCondition(JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.hit, coin.assistUsed, coin.body?.position, coin.body?.quaternion])) === beforeState, "拒絕出生不得更改持有、接觸旗標或姿態");
@@ -1318,6 +1437,8 @@ async function runChecks() {
 	await check("震波三維範圍衰減、共享動能預算及己方免疫", groundImpactBudgetCheck);
 	await check("首次落地機率爆炸、大範圍有界擊飛與捕獲隔離", explosionBranchCheck);
 	await check("正交視角傾15度、無牆與無邊界合法投擲", infiniteBattlefieldCheck);
+	await check("投擲、爆炸、散開及結算不移動場景座標", fixedCameraCheck);
+	await check("真時間逾時換手、低幀率補救及舊計時器隔離", turnDeadlineCheck);
 	await check("安全出生保留能量、受阻拒絕不改原對局", spawnSafetyCheck);
 	await check("偏心握持及不同質量分布產生空中角運動", airborneSpinCheck);
 	await check("平板碰撞與視覺、原慣量及只保留角度控制", flatGeometryCheck);

@@ -116,7 +116,9 @@ flowchart TD
 	Next --> CPU[scheduleCpuTurn → planCpuTurn]
 	CPU --> Throw
 	Next --> Ready
-	Sim -->|35秒未定| Capture
+	Throw --> Deadline[armGameTurnTimer：12秒真實時間與世代隔離]
+	Deadline -->|逾時仍未定| Capture
+	Capture --> ClearTimer[clearGameTurnTimer：清截止與排程]
 ```
 
 每次捕獲先快照符合條件的所有枚，再轉移到攻方手上，避免先移除下層影響同時結算。移除、拾起或捕獲會喚醒其餘枚並清除支撐快照。只按手上＋桌面的主人數判6：0。
@@ -159,16 +161,19 @@ flowchart TD
 | `scheduleCpuTurn` | 900ms 回呼驗 epoch／模式／玩家／狀態後，走同一投擲函式。 |
 | `pickGameAim` | 射線與無限桌面相交取得瞄準點；空中射線不變更目標。 |
 | `moveAimMarker` | 同步瞄準記號位置。 |
-| `fitBattleCamera` | 正交視角從垂直向下傾斜15°，投出、結算及視窗變動時納入起點、落點、桌面枚與特效；無牆或位置夾限。 |
+| `fitBattleCamera` | 15°正交視角固定世界原點與同視窗下的縮放；僅以視窗比例計算投影，不跟隨任何薄片、落點或特效；無牆或位置夾限。 |
+| `armGameTurnTimer`、`clearGameTurnTimer` | 成功投出啟動12秒原生回呼與Date.now截止，核對epoch／turn／thrownId；正常結算、重開、離開取消，低幀率不延長等待。 |
 | `swipeVelocityGain` | 將真實甩速轉為有界0.8～2倍率，無效值採最低倍率；電腦速度0.5對應1倍。 |
 | `stableGameFace` | 僅有真支撐且停止的枚回傳朝上面±1；側立、空中、移動及手中為0，供投出前基準與結算比較。 |
 | `spawnCaptureEffect`、`animateCaptureEffects` | 合法捕獲才建立金色環與碎光；0.8秒淡出擴散，無剛體、不影響結果。 |
 | `groundImpactLifecycleCheck`、`groundImpactBudgetCheck`、`captureEffects`（測試） | 驗真正首次落地、postStep時序、重彈與下手隔離、三維範圍衰減及實際總動能；篩選金色捕獲特效避免混淆藍色震波。 |
 | `explosionBranchCheck`（測試） | 固定隨機輸入驗25%邊界、唯一抽選、普通與爆炸範圍／實際總動能、界外與己方捕獲隔離及特效清理。 |
 | `lowSpeedRestitutionCheck`、`settleGameBodies`（測試） | 真接觸驗低速耗散與高速高彈性，材質保持；有限真步進等待自然停妥，保留原停止與捕獲門檻。 |
+| `fixedCameraCheck`、內部 `snapshotCamera`、`cameraResizeCheck`（測試） | 真投擲、震波、爆炸、散開及結算比較完整相機矩陣；真視窗變更只改投影，中心與15°方向不變。 |
+| `turnDeadlineCheck`（測試） | 原生12秒回呼與Date.now補結算、移動枚免捕獲、正常清理及舊手／新局／離開隔離；拒投不啟動計時。 |
 | `disposeCaptureEffect`、`clearCaptureEffects` | 移除及釋放特效幾何／材質；到期、重開與回設定清理。 |
 | `updateGameUI` | 更新安全名字、持有數、合法選幣按鈕、屬性、回合、勝利與紀錄；選幣回呼保留 id。 |
-| `animateGame` | 同步所有 3D 字形姿態，累積穩定時間，正常或超時呼叫結算。 |
+| `animateGame` | 同步所有3D字形姿態，累積穩定時間；正常結算或按真實截止補做逾時結算。 |
 
 ## 函式責任清單
 
