@@ -17,6 +17,7 @@ async function main() {
 		await page.waitForFunction(() => window.__game?.state.world != null, null, { /* timeout：外部字體／模組載入容許時間；polling：不用已停用的動畫。 */ timeout: 45000, polling: 100 });
 		const result = await page.evaluate(runChecks);
 		await pointerUiCheck(page);
+		await flickSpeedCheck(page);
 		assert.deepEqual(errors, [], "遊戲頁不得發生執行錯誤");
 		assert.deepEqual(result.failures, [], result.failures.join("\n"));
 		console.log(JSON.stringify(result, null, 2));
@@ -30,7 +31,7 @@ async function instrumentRoute(route) {
 
 	// 只暴露測試接點，不更改規則、判面或碰撞處理。
 	const response = await route.fetch();
-	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, makeGlyphMesh, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, glyphPhysicsProfile, handleGameContact, flushGameContacts, animateCaptureEffects, localPoint }; </script>";
+	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, makeGlyphMesh, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, glyphPhysicsProfile, handleGameContact, flushGameContacts, applyGroundImpact, animateCaptureEffects, localPoint }; </script>";
 	const html = (await response.text()).replace("</script>", expose);
 	await route.fulfill({ /* response：保留原回應；body：唯此測試可見的接點。 */ response, body: html });
 }
@@ -83,6 +84,34 @@ async function pointerUiCheck(page) {
 	await page.mouse.up();
 	assert.ok(await page.evaluate(() => !window.__game.game.drag && window.__game.game.status === "ready" && window.__game.game.coins.every((coin) => !coin.body)), "電腦回合不可由玩家拖曳偷投");
 	console.log("拖曳：短拖取消、箭頭與落點、放開投擲、CPU 回合鎖定通過");
+}
+
+async function flickSpeedCheck(page) {
+	const launches = [];
+	for (const delay of [0, 150]) {
+		await page.evaluate(async () => { document.getElementById("mode").value = "local"; document.getElementById("game-angle").value = 35; await window.__game.startGame(); });
+		await page.locator("#game-board").scrollIntoViewIfNeeded();
+		const bounds = await page.locator("#game-board").boundingBox(), x = bounds.x + bounds.width / 2;
+		await page.mouse.move(x, bounds.y + bounds.height * 0.9);
+		await page.mouse.down();
+		// 使用完全相同的六段路徑；僅改事件間隔，驗證速度而不是距離控制。
+		for (let index = 1; index <= 6; index++) {
+			await page.mouse.move(x, bounds.y + bounds.height * (0.9 - index * 0.4 / 6));
+			if (delay) await page.waitForTimeout(delay);
+		}
+		await page.mouse.up();
+		launches.push(await page.evaluate(() => {
+			const { game } = window.__game, body = game.coins.find((coin) => coin.id === game.thrownId)?.body;
+			return { /* gesture：真正手勢時間推算值；velocity：實際剛體速度；aim、angle、status：排除不同方向及未投出的假比較。 */ gesture: game.swipeSpeed, velocity: body?.velocity.length(), aim: game.aim.toArray(), angle: game.angleDegrees, status: game.status };
+		}));
+	}
+	assert.ok(launches.every((launch) => launch.status === "simulating" && launch.angle === 35), "快慢手勢都必須真正投出且保留同一仰角");
+	assert.ok(launches[0].gesture > launches[1].gesture * 2, "同路徑快拖與慢拖必須量到不同手勢速度");
+	assert.ok(launches[0].velocity > launches[1].velocity * 1.25, "同路徑快拖必須產生更高實際初速度");
+	for (let axis = 0; axis < 3; axis++) assert.ok(Math.abs(launches[0].aim[axis] - launches[1].aim[axis]) < 1e-8, "同路徑快慢拖曳仍須瞄準同一位置");
+	const gain = (speed) => 0.8 + 0.4 * Math.max(0, Math.min(3, speed));
+	assert.ok(Math.abs(launches[0].velocity / launches[1].velocity - gain(launches[0].gesture) / gain(launches[1].gesture)) < 1e-8, "真正初速度倍率必須由量到的手勢速度推導");
+	console.log("同路徑快慢拖曳：手勢時間與真正發射速度連動通過");
 }
 
 async function runChecks() {
@@ -182,6 +211,10 @@ async function runChecks() {
 
 	function owned(owner) {
 		return api.game.coins.filter((coin) => coin.owner === owner);
+	}
+
+	function captureEffects() {
+		return api.game.effects.filter((effect) => effect.type === "capture");
 	}
 
 	function assertSix() {
@@ -291,17 +324,17 @@ async function runChecks() {
 		step(480);
 		requireCondition(contacts > 0 && enemy.hit, "必須經真實剛體碰撞標記敵方受影響");
 		requireCondition(api.isGameCoinResting(enemy), "捕獲前必須有真實穩定支撐");
-		requireCondition(api.game.effects.length === 0, "只有碰撞或翻面尚未結算時不可提前播捕獲特效");
+		requireCondition(captureEffects().length === 0, "只有碰撞或翻面尚未結算時不可提前播捕獲特效");
 		const previousBody = enemy.body;
 		api.finishGameTurn();
 		requireCondition(enemy.owner === 0 && enemy.body === null, "命中後相對基準翻為背面並停止的敵枚應進攻方手中");
 		requireCondition(enemy.id === enemyId && enemy.text === enemyText && enemy.font === enemyFont && enemy.model === enemyModel, "捕獲必須保留身份、字體及完整物理模型");
 		requireCondition(!api.state.world.bodies.includes(previousBody), "捕獲後桌面舊剛體必須移除");
 		requireCondition(api.game.current === 1 && api.game.status === "ready", "捕獲判給出手者後才交替回合");
-		requireCondition(api.game.effects.length === 1, "真正停止並捕獲後才產生一次捕獲特效");
+		requireCondition(captureEffects().length === 1, "真正停止並捕獲後才產生一次捕獲特效");
 		const capturedState = JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.body?.id]));
 		api.animateCaptureEffects(0.2);
-		requireCondition(api.game.effects.length === 1 && api.game.effects[0].elapsed > 0, "捕獲特效必須有真正的可更新生命週期");
+		requireCondition(captureEffects().length === 1 && captureEffects()[0].elapsed > 0, "捕獲特效必須有真正的可更新生命週期");
 		api.animateCaptureEffects(1);
 		requireCondition(api.game.effects.length === 0, "特效結束須清理視覺物件");
 		requireCondition(JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.body?.id])) === capturedState, "特效更新或清理不能修改捕獲結果或物理薄片");
@@ -338,7 +371,7 @@ async function runChecks() {
 		thrown.hit = true;
 		api.finishGameTurn(true);
 		requireCondition(enemies.every((coin) => coin.owner === 1 && coin.body), "未命中、正面與仍旋轉敵枚不得捕獲");
-		requireCondition(api.game.effects.length === 0, "未成立的捕獲不能產生成功特效");
+		requireCondition(captureEffects().length === 0, "未成立的捕獲不能產生成功特效");
 		requireCondition(thrown.owner === 0 && thrown.body, "自投枚即使背面也不可因己方動作入手");
 		assertSix();
 
@@ -400,11 +433,11 @@ async function runChecks() {
 			enemy.hit = true;
 			step();
 			requireCondition(api.isGameCoinResting(enemy), "相對翻面結果仍必須取得真實支撐並停止");
-			requireCondition(api.game.effects.length === 0, "相對翻面尚未结算時不得提前播成功特效");
+			requireCondition(captureEffects().length === 0, "相對翻面尚未结算時不得提前播成功特效");
 			api.finishGameTurn();
 			const flipped = before !== after;
 			requireCondition(enemy.owner === (flipped ? 0 : 1) && (enemy.body === null) === flipped, "只有最終相對出手前變成另一面才捕獲；正轉背與背轉正皆成立");
-			requireCondition(api.game.effects.length === (flipped ? 1 : 0), "特效必須與相對翻面捕獲結果一致");
+			requireCondition(captureEffects().length === (flipped ? 1 : 0), "特效必須與相對翻面捕獲結果一致");
 			requireCondition(enemy.model === model, "正背兩方向捕獲均不能改原字形物性");
 			assertSix();
 		}
@@ -440,7 +473,7 @@ async function runChecks() {
 			step();
 			requireCondition(api.isGameCoinResting(enemy), "缺基準案例的最終背面必須确實停止並接地");
 			api.finishGameTurn(true);
-			requireCondition(enemy.owner === 1 && enemy.body && api.game.effects.length === 0, "缺少可靠初始面向時，即使後來命中且背面停止也不能捕獲或播成功特效");
+			requireCondition(enemy.owner === 1 && enemy.body && captureEffects().length === 0, "缺少可靠初始面向時，即使後來命中且背面停止也不能捕獲或播成功特效");
 			assertSix();
 		}
 	}
@@ -563,11 +596,12 @@ async function runChecks() {
 	}
 
 	async function gameEnergyCheck() {
-		for (const angle of [15, 35, 65]) {
+		for (const [angle, swipeSpeed] of [[15, 0], [35, 0.5], [65, 3]]) {
 			await newGame();
 			const coin = owned(0)[0], model = coin.model;
 			requireCondition(api.selectGameCoin(coin.id), "能量驗收必須由合法選枚進入");
 			api.game.angleDegrees = angle;
+			api.game.swipeSpeed = swipeSpeed;
 			api.game.aim.set(0, 0, 0);
 			requireCondition(api.throwGameCoin(), "能量驗收必須建立實際投擲剛體");
 			const body = coin.body;
@@ -577,10 +611,13 @@ async function runChecks() {
 			const potential = body.mass * api.config.gravity * (body.position.y - floorHeight);
 			const coverage = model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
 			const budget = 1.05 * 0.3 * api.config.gravity + 4 * (0.75 - 0.5 * coverage);
-			near(kinetic + rotation + potential, budget, "提高出生高度後，位能、平移與旋轉仍須共用明示總預算");
+			const remaining = budget - potential, baseLinear = Math.min(0.75 * remaining, 18 * model.mass, 0.72 / model.mass), gain = 0.8 + 0.4 * swipeSpeed;
+			near(kinetic, baseLinear * gain ** 2, "真正平移動能必須隨手勢速度倍率平方增加");
+			near(rotation, 0.09 * (remaining - baseLinear), "初始旋轉能量降為原來9%，未用能量不能補入平移");
+			near(kinetic + rotation + potential, potential + baseLinear * gain ** 2 + 0.09 * (remaining - baseLinear), "手勢平移、降低後旋轉與高度必須按新實際能量記帳");
 			near(body.position.y - floorHeight, 0.9 + 0.2 * (0.75 - 0.5 * coverage), "出生高度只由字形決定");
 			near(Math.atan2(body.velocity.y, Math.hypot(body.velocity.x, body.velocity.z)) * 180 / Math.PI, angle, "真正發射仰角必須符合唯一物理控制");
-			requireCondition(body.velocity.length() <= 6 + 1e-9 && body.mass * body.velocity.length() <= 1.2 + 1e-9, "遊戲發射也不得突破速度或衝量上限");
+			requireCondition(body.velocity.length() <= 6 * gain + 1e-9 && body.mass * body.velocity.length() <= 1.2 * gain + 1e-9 && body.velocity.length() <= 12 + 1e-9, "手勢放大後仍須遵守相應速度及動量上限");
 			requireCondition(kinetic >= 0 && rotation >= 0 && potential >= -1e-9, "不可用負能量掩蓋超額發射");
 		}
 	}
@@ -606,46 +643,51 @@ async function runChecks() {
 	}
 
 	async function normalizedBalanceCheck() {
-		let previousMass = 0, previousEnergy = Infinity, previousDamping = 0;
-		for (const side of [1, 4, 8, 12, 16]) {
-			await newGame();
-			const coverage = side * side / 256;
-			const raw = sampleRawRectangle(side, side);
-			const original = JSON.stringify(raw);
-			const balanced = api.balanceGameModel(raw);
-			const mass = 0.18 + 0.12 * coverage, ratio = mass / raw.mass;
-			near(raw.mass, coverage * api.config.density * api.config.thickness * api.config.size ** 2, "實驗室材料質量必須保持原公式");
-			near(balanced.mass, mass, "遊戲規範化質量");
-			for (const key of ["cx", "cz", "angle", "support", "offset", "step"]) near(balanced[key], raw[key], "規範化不得改變形狀與重心");
-			for (const axis of ["x", "y", "z"]) near(balanced.inertia[axis], raw.inertia[axis] * ratio, "規範化必須一致縮放主慣量");
-			near(balanced.stability, raw.stability * ratio, "規範化重力能障必須與質量同比例");
-			requireCondition(balanced.cells.length === raw.cells.length, "規範化不得改變原佔據格數");
-			for (let index = 0; index < raw.cells.length; index++) {
-				const cell = balanced.cells[index], source = raw.cells[index];
-				near(cell.mass, source.mass * ratio, "每格質量必須一致縮放");
-				for (const key of ["x", "z", "row", "col", "alpha"]) near(cell[key], source[key], "規範化不得修改格位或覆蓋率");
-			}
-			requireCondition(JSON.stringify(raw) === original, "規範化不能原地修改共用實驗室模型");
+		for (const swipeSpeed of [0, 0.5, 3]) {
+			let previousMass = 0, previousEnergy = Infinity, previousDamping = 0;
+			for (const side of [1, 4, 8, 12, 16]) {
+				await newGame();
+				api.game.swipeSpeed = swipeSpeed;
+				const gain = 0.8 + 0.4 * swipeSpeed;
+				const coverage = side * side / 256;
+				const raw = sampleRawRectangle(side, side);
+				const original = JSON.stringify(raw);
+				const balanced = api.balanceGameModel(raw);
+				const mass = 0.18 + 0.12 * coverage, ratio = mass / raw.mass;
+				near(raw.mass, coverage * api.config.density * api.config.thickness * api.config.size ** 2, "實驗室材料質量必須保持原公式");
+				near(balanced.mass, mass, "遊戲規範化質量");
+				for (const key of ["cx", "cz", "angle", "support", "offset", "step"]) near(balanced[key], raw[key], "規範化不得改變形狀與重心");
+				for (const axis of ["x", "y", "z"]) near(balanced.inertia[axis], raw.inertia[axis] * ratio, "規範化必須一致縮放主慣量");
+				near(balanced.stability, raw.stability * ratio, "規範化重力能障必須與質量同比例");
+				requireCondition(balanced.cells.length === raw.cells.length, "規範化不得改變原佔據格數");
+				for (let index = 0; index < raw.cells.length; index++) {
+					const cell = balanced.cells[index], source = raw.cells[index];
+					near(cell.mass, source.mass * ratio, "每格質量必須一致縮放");
+					for (const key of ["x", "z", "row", "col", "alpha"]) near(cell[key], source[key], "規範化不得修改格位或覆蓋率");
+				}
+				requireCondition(JSON.stringify(raw) === original, "規範化不能原地修改共用實驗室模型");
 
-			// 直接投擲規範化後的字形，量測完整能量，不拿進攻份額儀表當成實際效果。
-			const coin = owned(0)[0];
-			coin.model = balanced;
-			requireCondition(api.selectGameCoin(coin.id), "規範化驗收必須使用合法持有枚");
-			api.game.angleDegrees = 35;
-			requireCondition(api.throwGameCoin(), "規範化字形必須可以真正投擲");
-			const body = coin.body, omega = body.quaternion.conjugate().vmult(body.angularVelocity);
-			const rotation = 0.5 * (balanced.inertia.x * omega.x ** 2 + balanced.inertia.y * omega.y ** 2 + balanced.inertia.z * omega.z ** 2);
-			const energy = 0.5 * body.mass * body.velocity.lengthSquared() + rotation + body.mass * api.config.gravity * (body.position.y - floorHeight);
-			near(energy, 1.05 * 0.3 * api.config.gravity + 3 - 2 * coverage, "加上共同高拋位能基準後，實際投擲總能量仍須依進攻份額下降");
-			near(body.mass, mass, "規範化質量必須直接作用於剛體");
-			near(body.angularDamping, 0.08 + 0.24 * (0.25 + 0.5 * coverage), "高覆蓋率防守耗散必須直接作用於剛體");
-			requireCondition(body.mass > previousMass && energy < previousEnergy && body.angularDamping > previousDamping, "密度上升必須提高質量與耗散、嚴格降低实际發射能量");
-			requireCondition(body.velocity.length() <= 6 + 1e-9 && body.mass * body.velocity.length() <= 1.2 + 1e-9, "低密度亦不得突破速度與衝量上限");
-			assertBodyMask(body, balanced);
-			requireCondition(JSON.stringify(raw) === original, "建立及投擲遊戲剛體仍不得污染原材料模型");
-			previousMass = body.mass;
-			previousEnergy = energy;
-			previousDamping = body.angularDamping;
+				// 直接投擲規範化後的字形，量測完整能量，不拿進攻份額儀表當成實際效果。
+				const coin = owned(0)[0];
+				coin.model = balanced;
+				requireCondition(api.selectGameCoin(coin.id), "規範化驗收必須使用合法持有枚");
+				api.game.angleDegrees = 35;
+				requireCondition(api.throwGameCoin(), "規範化字形必須可以真正投擲");
+				const body = coin.body, omega = body.quaternion.conjugate().vmult(body.angularVelocity);
+				const rotation = 0.5 * (balanced.inertia.x * omega.x ** 2 + balanced.inertia.y * omega.y ** 2 + balanced.inertia.z * omega.z ** 2);
+				const energy = 0.5 * body.mass * body.velocity.lengthSquared() + rotation + body.mass * api.config.gravity * (body.position.y - floorHeight);
+				const potential = mass * api.config.gravity * (0.9 + 0.2 * (0.75 - 0.5 * coverage)), remaining = 1.05 * 0.3 * api.config.gravity + 3 - 2 * coverage - potential;
+				near(energy, potential + (0.75 * gain ** 2 + 0.0225) * remaining, "慢、中、快手勢均須扣除未使用旋轉能量並保持密度能量單調");
+				near(body.mass, mass, "規範化質量必須直接作用於剛體");
+				near(body.angularDamping, 0.08 + 0.24 * (0.25 + 0.5 * coverage), "高覆蓋率防守耗散必須直接作用於剛體");
+				requireCondition(body.mass > previousMass && energy < previousEnergy && body.angularDamping > previousDamping, "密度上升必須提高質量與耗散、嚴格降低实际發射能量");
+				requireCondition(body.velocity.length() <= 6 * gain + 1e-9 && body.mass * body.velocity.length() <= 1.2 * gain + 1e-9, "低密度亦不得突破速度與衝量上限");
+				assertBodyMask(body, balanced);
+				requireCondition(JSON.stringify(raw) === original, "建立及投擲遊戲剛體仍不得污染原材料模型");
+				previousMass = body.mass;
+				previousEnergy = energy;
+				previousDamping = body.angularDamping;
+			}
 		}
 	}
 
@@ -685,12 +727,12 @@ async function runChecks() {
 			api.handleGameContact(body, event);
 			const after = kineticEnergy(body), extra = after - before;
 			const coverage = side * side / 256;
-			near(extra, b * oldImpulse + 0.5 * k * oldImpulse ** 2, "一般邊緣衝量必須依完整線／角動能計帳");
+			near(extra, b * 2 * oldImpulse + 0.5 * k * (2 * oldImpulse) ** 2, "雙倍邊緣衝量必須依完整線／角動能計帳");
 			const impulse = body.mass * (body.velocity.y - velocityBefore.y);
-			near(impulse, oldImpulse, "恢復一般邊緣衝量，不得殘留六倍放大");
+			near(impulse, 2 * oldImpulse, "實際邊緣壓力衝量必須為原來兩倍");
 			const deltaSpin = body.quaternion.conjugate().vmult(body.angularVelocity.vsub(spinBefore));
-			for (const axis of ["x", "y", "z"]) near(deltaSpin[axis], oldImpulse * torque[axis] / body.inertia[axis], "角速增量必須符合一般偏心衝量");
-			requireCondition(impulse <= 0.8 + 1e-9, "一般助推仍受0.8Ns上限限制");
+			for (const axis of ["x", "y", "z"]) near(deltaSpin[axis], 2 * oldImpulse * torque[axis] / body.inertia[axis], "角速增量必須符合雙倍偏心衝量");
+			requireCondition(impulse <= 1.6 + 1e-9, "雙倍助推仍受1.6Ns上限限制");
 			near(body.position.distanceTo(positionBefore), 0, "助推不可直接改變位置");
 			for (const axis of ["x", "y", "z", "w"]) near(body.quaternion[axis], orientationBefore[axis], "助推不可強制指定姿態或正背面");
 			requireCondition(extra < previousExtra && enemy.assistUsed && enemy.hit, "較密攻方必須取得較低加成上限，並標記本枚已使用");
@@ -699,6 +741,17 @@ async function runChecks() {
 			requireCondition(enemy.owner === 1, "邊緣助推不能直接代替最終判面或捕獲");
 			previousExtra = extra;
 		}
+
+		await newGame();
+		const attacker = beginThrow(), enemy = owned(1)[0], body = place(enemy, 3);
+		const point = api.localPoint(enemy.model.cells[0], enemy.model), offset = body.quaternion.vmult(point);
+		let impact = 0.19;
+		const event = { /* body：真正攻方；contact：隔離新入射門檻的同一邊緣與可控入射速度。 */ body: attacker.body, contact: { /* bi、ri：真實敵枚及世界力臂；getImpactVelocityAlongNormal：僅改門檻條件，不指定結果。 */ bi: body, ri: offset, getImpactVelocityAlongNormal: () => impact } };
+		api.handleGameContact(body, event);
+		requireCondition(!enemy.assistUsed && body.velocity.length() === 0, "低於0.2m/s時仍不可無條件取得邊緣助推");
+		impact = 0.3;
+		api.handleGameContact(body, event);
+		requireCondition(enemy.assistUsed && body.velocity.y > 0 && body.angularVelocity.length() > 0, "介於新舊門檻的0.3m/s邊緣按壓應產生真正向上及旋轉反應");
 	}
 
 	async function deferredContactCheck() {
@@ -718,7 +771,8 @@ async function runChecks() {
 			// 只量測真正施力前後；不改衝量、位置、朝向或求解順序。
 			const before = kineticEnergy(this), spin = this.angularVelocity.clone(), position = this.position.clone(), orientation = this.quaternion.clone();
 			originalImpulse.call(this, impulse, point);
-			impulses.push({ /* energy、spin：真正求解後衝量造成的完整動能及角速增量。 */ energy: kineticEnergy(this) - before, spin: this.angularVelocity.distanceTo(spin) });
+			const torque = point.cross(impulse.clone().set(0, 1, 0)), b = this.velocity.y - impulse.y / this.mass + spin.dot(torque);
+			impulses.push({ /* energy、spin：實際動能及角速增量；correction：雙倍衝量能量修正；edge：純向上邊緣施力，與向外震波分開計數。 */ energy: kineticEnergy(this) - before, spin: this.angularVelocity.distanceTo(spin), correction: 2 * Math.max(0, -b) * impulse.y / 2, edge: Math.hypot(impulse.x, impulse.z) < 1e-10 });
 			near(this.position.distanceTo(position), 0, "真實助推不可傳送位置");
 			for (const axis of ["x", "y", "z", "w"]) near(this.quaternion[axis], orientation[axis], "真實助推不可強制翻面");
 		}
@@ -738,10 +792,10 @@ async function runChecks() {
 		requireCondition(callbacks > 0 && enemy.hit && enemy.assistUsed, "真正碰撞必須於本步完成命中及助推");
 		requireCondition(impulses.length === 1 && impulses[0].spin > 0.01, "求解後真正邊緣衝量必須產生非零角速回應");
 		const coverage = attacker.model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
-		requireCondition(impulses[0].energy <= 1.2 * (0.75 - 0.5 * coverage) / 0.75 + 1e-8, "真實求解後一般衝量須遵守完整能量上界");
+		requireCondition(impulses[0].energy <= 4 * 1.2 * (0.75 - 0.5 * coverage) / 0.75 + impulses[0].correction + 1e-8, "真實求解後雙倍衝量須遵守含交叉項的能量上界");
 		requireCondition(api.game.contacts.length === 0 && enemy.owner === 1, "本步接觸佇列應清空且不能直接捕獲");
 		step(90);
-		requireCondition(impulses.length === 1, "後續真實碰撞不可重複助推同一敵枚");
+		requireCondition(impulses.filter((impulse) => impulse.edge).length === 1, "後續真實碰撞不可重複施加邊緣助推同一敵枚；向外落地震波另有獨立單次驗收");
 
 		// 保留真正產生的接觸，重現重開發生於待處理接觸存在時的生命週期。
 		api.game.contacts.push(savedContact);
@@ -753,14 +807,117 @@ async function runChecks() {
 		assertSix();
 	}
 
+	async function groundImpactLifecycleCheck() {
+		await newGame();
+		const source = beginThrow(), body = place(source);
+		body.position.y = 0.25;
+		body.velocity.set(0, -4, 0);
+		body.aabbNeedsUpdate = true;
+		let contacts = 0, firstPoint = null;
+		body.addEventListener("collide", (event) => {
+			if (event.body !== api.state.floor) return;
+
+			contacts++;
+			if (contacts !== 1) return;
+
+			requireCondition(!api.game.groundImpactUsed && api.game.effects.every((effect) => effect.type !== "shock"), "真正落地 collide 內不可提前施加或呈現震波");
+			const contact = event.contact, offset = contact.bi === body ? contact.ri : contact.rj;
+			firstPoint = body.position.vadd(offset);
+		});
+		for (let tick = 0; tick < 60 && !api.game.groundImpactUsed; tick++) step(1);
+		requireCondition(contacts > 0 && api.game.groundImpactUsed && api.game.lastGroundImpact?.sourceId === source.id, "真正投出枚首次接地後必須產生一次震波");
+		const record = api.game.lastGroundImpact, shock = api.game.effects.filter((effect) => effect.type === "shock");
+		requireCondition(shock.length === 1 && captureEffects().length === 0, "落地只產生震波，不能冒充捕獲成功");
+		near(record.origin.x, firstPoint.x, "震源須保存真實求解前接觸橫座標");
+		near(record.origin.z, firstPoint.z, "震源須保存真實求解前接觸縱座標");
+		near(shock[0].duration, 0.6, "震波視覺具有獨立短生命週期");
+		// 安排同枚第二次真落地，不清除本回合一次性旗標。
+		place(source);
+		body.position.y = 0.3;
+		body.velocity.set(0, -5, 0);
+		body.aabbNeedsUpdate = true;
+		step(90);
+		requireCondition(contacts > 1 && api.game.lastGroundImpact === record && api.game.effects.filter((effect) => effect.type === "shock").length === 1, "同枚再次真落地不得重播或重施震波");
+		const before = JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.body?.id]));
+		api.animateCaptureEffects(0.2);
+		requireCondition(shock[0].elapsed > 0 && shock[0].ring.scale.x > 0, "震波必須真正更新視覺生命週期");
+		api.animateCaptureEffects(0.5);
+		requireCondition(api.game.effects.length === 0 && !api.state.scene.children.includes(shock[0].group), "震波到期須移除場景物件");
+		requireCondition(JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.body?.id])) === before, "震波視覺清理不可修改物理物件或所有權");
+		api.finishGameTurn(true);
+		beginThrow();
+		requireCondition(!api.game.groundImpactUsed && api.game.lastGroundImpact == null, "下一手合法投擲應重新開放一次落地震波");
+		await newGame();
+		requireCondition(!api.game.groundImpactUsed && api.game.lastGroundImpact == null && api.game.effects.length === 0, "重開應清理落地旗標、紀錄與特效");
+		assertSix();
+	}
+
+	async function groundImpactBudgetCheck() {
+		// 隔離震波施力函式；觸發來源真接地與求解時序由上一案例另行驗證。
+		for (const moving of [false, true]) {
+			await newGame();
+			const friendly = owned(0)[1], hand = owned(0)[2], [nearEnemy, farEnemy, outside] = owned(1);
+			const model = api.balanceGameModel(sampleRawRectangle(1, 1));
+			for (const coin of [friendly, nearEnemy, farEnemy, outside]) coin.model = model;
+			place(friendly, -0.7);
+			place(nearEnemy, 0.7);
+			place(farEnemy, 1.8);
+			place(outside, 4);
+			step();
+			const source = beginThrow(), origin = source.body.position.clone().set(0, 0.03, 0), impact = 5;
+			const offense = 0.75 - 0.5 * source.model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
+			const radius = 2.2 + 0.8 * offense, budget = Math.min(2.4, 0.12 * source.model.mass * impact ** 2 * offense);
+			if (moving) { outside.body.position.set(0, radius + 1, 0); outside.body.aabbNeedsUpdate = true; }
+			const snapshots = new Map();
+			for (const coin of [friendly, nearEnemy, farEnemy, outside]) {
+				const body = coin.body;
+				body.wakeUp();
+				body.velocity.set(moving ? 0.4 : 0, moving ? -2 : 0, 0);
+				body.angularVelocity.set(moving ? 3 : 0, 0, moving ? -4 : 0);
+				body.updateInertiaWorld(true);
+				snapshots.set(coin.id, { /* energy：量測前真動能；velocity：計算衝量；position、quaternion、owner：禁止施力直接改判定。 */ energy: kineticEnergy(body), velocity: body.velocity.clone(), position: body.position.clone(), quaternion: body.quaternion.clone(), owner: coin.owner });
+			}
+			const entry = { /* body、other、groundPoint、impact：隔離施力的已接地輸入，不能用來替代真碰撞案例。 */ body: source.body, other: api.state.floor, groundPoint: origin.clone(), impact };
+			requireCondition(api.applyGroundImpact(entry), "合法震波輸入應真正施力");
+			const affected = [friendly, nearEnemy, farEnemy], weights = affected.map((coin) => (1 - coin.body.position.distanceTo(origin) / radius) ** 2), totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+			let totalDelta = 0;
+			for (let index = 0; index < affected.length; index++) {
+				const coin = affected[index], body = coin.body, before = snapshots.get(coin.id);
+				const delta = kineticEnergy(body) - before.energy, impulse = body.velocity.distanceTo(before.velocity) * body.mass;
+				requireCondition(coin.hit && impulse > 0 && impulse <= 0.65 + 1e-8, "範圍內己方與敵方都須獲得有界真實衝量");
+				requireCondition(delta <= budget * weights[index] / totalWeight + 1e-8, "每枚真實動能增量須包含既有角速交叉項並遵守權重分配");
+				near(body.position.distanceTo(before.position), 0, "震波不能直接傳送薄片");
+				for (const axis of ["x", "y", "z", "w"]) near(body.quaternion[axis], before.quaternion[axis], "震波不能強制旋轉到捕獲面");
+				requireCondition(coin.owner === before.owner, "震波施力不能直接改所有權");
+				totalDelta += delta;
+			}
+			requireCondition(totalDelta <= budget + 1e-8, "多枚震波的完整動能增量總和不得超過共享預算");
+			if (!moving) requireCondition(nearEnemy.body.velocity.length() > farEnemy.body.velocity.length(), "同質量近處枚必須比遠處枚得到更強推動");
+			near(outside.body.velocity.distanceTo(snapshots.get(outside.id).velocity), 0, "水平或垂直超出三維範圍的枚不可受波");
+			requireCondition(!outside.hit && !hand.body && !hand.hit && hand.owner === 0, "範圍外及手中枚不可被標記受波或改所有權");
+			const after = affected.map((coin) => kineticEnergy(coin.body));
+			requireCondition(!api.applyGroundImpact(entry), "同一回合震波核心亦須拒絕重複施力");
+			for (let index = 0; index < affected.length; index++) near(kineticEnergy(affected[index].body), after[index], "重複震波不可累加能量");
+			// 己方受波且最後翻到反面，仍必須免於自己的捕獲判定。
+			place(source, 10);
+			place(friendly, -10);
+			backface(friendly);
+			step(480);
+			requireCondition(api.isGameCoinResting(friendly) && friendly.faceBeforeThrow === 1, "己方免疫 fixture 必須先有正面基準且真正背面停妥");
+			api.finishGameTurn(true);
+			requireCondition(friendly.owner === 0 && friendly.body, "己方即使被震波推動並翻面也不能被自己捕獲");
+			assertSix();
+		}
+	}
+
 	async function infiniteBattlefieldCheck() {
 		await newGame();
 		requireCondition(!api.game.walls?.length && api.state.world.bodies.every((body) => body.mass > 0 || body === api.state.floor), "戰場只能有無限地面，不能殘留隱形物理牆");
 		requireCondition(api.state.camera.isOrthographicCamera, "正式戰場必須使用正交相機");
 		const direction = api.state.camera.getWorldDirection(api.game.aim.clone());
 		near(direction.x, 0, "視線必須垂直向下，不能有水平偏角");
-		near(direction.y, -1, "相機必須從正上方觀看");
-		near(direction.z, 0, "視線必須垂直向下，不能有縱深偏角");
+		near(direction.y, -Math.cos(Math.PI / 12), "相機視線須為垂直向下再傾15度");
+		near(direction.z, -Math.sin(Math.PI / 12), "相機須具有明確15度縱向傾角");
 		for (const axis of ["x", "z"]) {
 			await newGame();
 			const coin = owned(0)[0], body = place(coin);
@@ -825,7 +982,8 @@ async function runChecks() {
 		requireCondition(!overlap, "成功出生的實際碰撞 AABB 不得與既有疊牌重疊");
 		const body = selected.body, energy = kineticEnergy(body) + body.mass * api.config.gravity * (body.position.y - floorHeight);
 		const coverage = selected.model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
-		near(energy, 1.05 * 0.3 * api.config.gravity + 3 - 2 * coverage, "另尋安全出生方向不可增添高度、平移或旋轉能量");
+		const potential = body.mass * api.config.gravity * (body.position.y - floorHeight), remaining = 1.05 * 0.3 * api.config.gravity + 3 - 2 * coverage - potential;
+		near(energy, potential + 0.7725 * remaining, "另尋安全出生方向不可增添已降低的發射能量");
 		assertSix();
 	}
 
@@ -844,6 +1002,13 @@ async function runChecks() {
 			for (const axis of ["x", "y", "z"]) momentum[axis] *= model.inertia[axis];
 			requireCondition(torque.length() > 0 && momentum.length() > 0, "偏心發射必須產生非零空中角動量");
 			requireCondition(torque.cross(momentum).length() / (torque.length() * momentum.length()) < 1e-8 && torque.dot(momentum) > 0, "角動量方向必須由力臂叉乘速度決定，不能套固定旋轉軸");
+			const coverage = model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
+			const potential = model.mass * api.config.gravity * (0.9 + 0.2 * (0.75 - 0.5 * coverage)), remaining = 1.05 * 0.3 * api.config.gravity + 3 - 2 * coverage - potential;
+			const oldSpinEnergy = remaining - Math.min(0.75 * remaining, 18 * model.mass, 0.72 / model.mass), rawOmega = torque.clone();
+			for (const axis of ["x", "y", "z"]) rawOmega[axis] /= model.inertia[axis];
+			const rawEnergy = 0.5 * (model.inertia.x * rawOmega.x ** 2 + model.inertia.y * rawOmega.y ** 2 + model.inertia.z * rawOmega.z ** 2);
+			const oldScale = Math.sqrt(oldSpinEnergy / rawEnergy);
+			for (const axis of ["x", "y", "z"]) near(omega[axis], 0.3 * oldScale * rawOmega[axis], "初始角速應為相同字形原偏心發射角速的30%");
 			spins.push(body.angularVelocity.clone());
 		}
 		requireCondition(spins[0].distanceTo(spins[1]) > 0.1, "相同覆蓋率但分布不同的字形必須有不同空中角速回應");
@@ -1034,9 +1199,11 @@ async function runChecks() {
 	await check("合併碰撞盒保留原遮罩、空洞、質量與慣量", mergedGeometryCheck);
 	await check("遊戲投擲平移、旋轉、高度共用有界預算", gameEnergyCheck);
 	await check("遊戲規範化保留原模型、密度攻防實際單調", normalizedBalanceCheck);
-	await check("遊戲邊緣能量隨攻方進攻份額下降且每枚只加一次", gameEdgeEnergyCheck);
+	await check("雙倍邊緣衝量、較低門檻與每枚一次限制", gameEdgeEnergyCheck);
 	await check("真實接觸求解後助推、一次性與重開佇列清理", deferredContactCheck);
-	await check("正上方正交視角、無牆與無邊界合法投擲", infiniteBattlefieldCheck);
+	await check("真落地震波時序、每手一次與純視覺清理", groundImpactLifecycleCheck);
+	await check("震波三維範圍衰減、共享動能預算及己方免疫", groundImpactBudgetCheck);
+	await check("正交視角傾15度、無牆與無邊界合法投擲", infiniteBattlefieldCheck);
 	await check("安全出生保留能量、受阻拒絕不改原對局", spawnSafetyCheck);
 	await check("偏心握持及不同質量分布產生空中角運動", airborneSpinCheck);
 	await check("平板碰撞與視覺、原慣量及只保留角度控制", flatGeometryCheck);

@@ -102,6 +102,8 @@ flowchart TD
 	Queue --> Flush[postStep → flushGameContacts]
 	Flush --> Hit[handleGameContact：接觸鏈命中]
 	Hit --> Edge[applyGameEdgeAssist：有界一次助推]
+	Flush --> Shock[applyGroundImpact：首次落地共享範圍衝量]
+	Shock --> Ring[spawnGroundShockEffect：藍色擴散環]
 	Sim --> Rest[isGameCoinResting]
 	Rest --> Face[stableGameFace：與投出前朝上面比較]
 	Face --> Capture[finishGameTurn：相對翻面捕獲與特效]
@@ -127,7 +129,7 @@ flowchart TD
 | `getGameElement` | 以固定 ID 存取 DOM，使用者字形與名字只透過 textContent 顯示。 |
 | `bindGameControls` | 綁定開始、重開、回設定、仰角及底部拖曳回呼；不提供点击、按鈕或鍵盤投擲。 |
 | `startGame` | 驗證六枚、建立輸入快照、字體／字形載入與 epoch 檢查、清理舊場景、建立對局；player map 回呼只建立安全名稱與色彩。 |
-| `setupGameBoard` | 建立固定邊界與非物理瞄準記號，重開時移除舊牆。 |
+| `setupGameBoard` | 建立非物理瞄準記號，重開時移除舊牆，地面保持無限。 |
 | `clearGameBodies`、`removeGameBody` | 移除對局或單枚的剛體、幾何、材質、紋理與支撐紀錄。 |
 | `leaveGame` | 取消 CPU、隔離舊世代、清理對局並還原設定／物理测试容器。 |
 | `availableGameCoins` | filter 所有權與手上枚，實現手上優先。 |
@@ -138,9 +140,11 @@ flowchart TD
 | `throwGameCoin` | 保存本次攻擊者、拾起合法枚、喚醒其他枚、分配位能／平移／旋轉，開始真實模擬。 |
 | `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
 | `flushGameContacts` | 每步求解完成後清空接觸佇列；沿真實接觸傳遞六枚命中關係，再以目前姿態還原力臂、處理一次助推。 |
+| `applyGroundImpact` | 真實地面接觸在postStep觸發本手唯一震波；filter/map/reduce選三維範圍內枚、分配衰減預算並求最近筆畫，施加有界向外／向上衝量。 |
+| `spawnGroundShockEffect` | 建立0.6秒藍色擴散环，範圍與真實震波一致，無物理形體。 |
 | `prepareGameThrow` | 保持共同能量／速度預算，預檢八個入射方向的實際出生包圍盒；排除牆及既有堆疊，拒絕時不改回合或拿走枚。 |
 | `glyphPhysicsProfile` | 由文字攻防導出能量、高度、彈性與摩擦；玩家不能調整這些係數，材質互撞採乘積。 |
-| `beginGameDrag`、`updateGameDrag` | 限真人準備回合的底部單指手勢；只改瞄準位置，投影落點及 SVG 箭頭；不由拖曳距離改力度。 |
+| `beginGameDrag`、`updateGameDrag` | 底部單指手勢累積路徑與事件時間，以戰場高度正規化甩速；另更新瞄準與落點箭頭。 |
 | `endGameDrag`、`cancelGameDrag` | 有效上拖放開才投擲；清除指標捕獲、手勢與箭頭，短拖／取消不出手。 |
 | `applyGameEdgeAssist` | 在真实接觸力臂施加有動能增量上限的補充衝量，不指定結果。 |
 | `isGameCoinResting` | 分別檢查速度，BFS 真實支撐路徑，或驗證休眠快照；map 回呼記錄姿態證據。 |
@@ -149,11 +153,13 @@ flowchart TD
 | `finishGameTurn` | 正常等待或超時結算、快照多枚捕獲、維持身分回手、檢查6：0、換手與 AI 排程。 |
 | `planCpuTurn` | 對手穩定度排序，內部 `attackScore` 以受限能量和質量傳遞估計選攻方，求有誤差的邊緣目標，回傳實際出手計畫。 |
 | `scheduleCpuTurn` | 900ms 回呼驗 epoch／模式／玩家／狀態後，走同一投擲函式。 |
-| `pickGameAim` | 射線與桌面相交，限制目標範圍並聚焦鍵盤；空中射線不變更目標。 |
+| `pickGameAim` | 射線與無限桌面相交取得瞄準點；空中射線不變更目標。 |
 | `moveAimMarker` | 同步瞄準記號位置。 |
-| `fitBattleCamera` | 真正正交垂直向下，結算及視窗改變時納入所有桌面枚與擊殺特效；無牆或世界位置夾限。 |
+| `fitBattleCamera` | 正交視角從垂直向下傾斜15°，投出、結算及視窗變動時納入起點、落點、桌面枚與特效；無牆或位置夾限。 |
+| `swipeVelocityGain` | 將真實甩速轉為有界0.8～2倍率，無效值採最低倍率；電腦速度0.5對應1倍。 |
 | `stableGameFace` | 僅有真支撐且停止的枚回傳朝上面±1；側立、空中、移動及手中為0，供投出前基準與結算比較。 |
 | `spawnCaptureEffect`、`animateCaptureEffects` | 合法捕獲才建立金色環與碎光；0.8秒淡出擴散，無剛體、不影響結果。 |
+| `groundImpactLifecycleCheck`、`groundImpactBudgetCheck`、`captureEffects`（測試） | 驗真正首次落地、postStep時序、重彈與下手隔離、三維範圍衰減及實際總動能；篩選金色捕獲特效避免混淆藍色震波。 |
 | `disposeCaptureEffect`、`clearCaptureEffects` | 移除及釋放特效幾何／材質；到期、重開與回設定清理。 |
 | `updateGameUI` | 更新安全名字、持有數、合法選幣按鈕、屬性、回合、勝利與紀錄；選幣回呼保留 id。 |
 | `animateGame` | 同步所有 3D 字形姿態，累積穩定時間，正常或超時呼叫結算。 |
@@ -218,6 +224,7 @@ flowchart TD
 | `flatGeometryCheck` | 驗平面擠出外觀、平板碰撞、孔洞與原質點慣量，完整材質群組不可漏画。 |
 | `shapeWorldVertices` | 讀取方盒／凸薄片的真角點並套用片段偏移及旋轉，供遮罩、厚度與曲面回歸使用。 |
 | `pointerUiCheck` | 以真實滑鼠拖曳驗箭頭、預測落點、短拖取消、放開投擲與電腦回合鎖定。 |
+| `flickSpeedCheck` | 真實滑鼠以同路徑、不同時間甩動，驗快甩有更高速度、能量有界與正常換手。 |
 | `recordGroundSupport`、`sleepingSupportCheck` | 以真正桌面接觸和產品自然休眠測試紀錄與空中失效。 |
 | `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
 | `sampleRawRectangle`、內部 `knownImage`、`normalizedBalanceCheck` | 解析覆蓋率階段驗重量、完整投擲能量、幾何與重心保持，以及不污染校準模型。 |
