@@ -45,7 +45,9 @@
 			.setup-bar > div { min-width: 200px; }
 			.match-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 16px; }
 			.match-layout > div { min-width: 0; }
-			#game-board { height: 520px; border: 1px solid #dce2e7; border-radius: 10px; overflow: hidden; touch-action: none; cursor: crosshair; }
+			#game-board { position: relative; height: 520px; border: 1px solid #dce2e7; border-radius: 10px; overflow: hidden; touch-action: none; cursor: crosshair; }
+			.launch-zone { position: absolute; bottom: 0; left: 0; right: 0; height: 25%; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 12px; background: linear-gradient(transparent, #247a9520); color: #256979; pointer-events: none; }
+			#throw-preview { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 			.scoreboard { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 14px; }
 			.score { background: #fff; border: 1px solid #dce2e7; border-radius: 8px; padding: 12px; }
 			.score.current { outline: 2px solid #256979; }
@@ -98,11 +100,12 @@
 			<section id="match" hidden>
 				<div class="scoreboard"><div id="score-0" class="score player-0"></div><div id="score-1" class="score player-1"></div></div>
 				<div class="match-layout">
-					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；點選位置瞄準，方向鍵微調，Enter 投擲"></div><p class="legend">點擊／觸碰桌面瞄準。方向鍵可微調，Enter 投擲。正面保留原字，灰白色背面朝上才可被奪取。</p></div>
+					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從底部往上拖曳，放開投擲"><div class="launch-zone">從底部往上拖曳，放開投擲</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">底部拖曳：箭頭指向預計落點，拖得越遠力道越大。也可點桌面瞄準再按投擲。正面保留原字，灰白色背面朝上才可被奪取。</p></div>
 					<aside class="panel">
 						<h2 id="turn-label"></h2><p id="match-status" role="status" aria-live="polite"></p><div id="winner" hidden></div>
 						<div id="coin-list"></div><p id="selected-stats" class="legend"></p>
 						<label for="game-power">投擲力道 <output id="game-power-value">80%</output></label><input id="game-power" type="range" min="0.1" max="1" step="0.05" value="0.8">
+						<label for="game-restitution">彈性係數 <output id="game-restitution-value">0.65</output></label><input id="game-restitution" type="range" min="0" max="0.9" step="0.05" value="0.65">
 						<div class="actions"><button id="throw-game" class="primary">投擲</button><button id="restart-game">再玩一場</button><button id="back-setup">結束並回設定</button></div>
 						<ol id="game-log" aria-label="回合紀錄"></ol>
 					</aside>
@@ -174,10 +177,13 @@
 				 * turn、elapsed、quiet：回合與靜止時間；epoch：隔離舊非同步與計時器。
 				 * cpuTimer：目前 AI 計時器；players：名稱與顏色；difficulty：AI 瞄準誤差。
 				 * walls：有限桌面的物理邊界；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。
-				 * contacts：本步真實接觸及局部力臂，求解結束後才施加遊戲助推。 */
+				 * contacts：本步真實接觸及局部力臂，求解結束後才施加遊戲助推。
+				 * restitution、coinMaterial、floorMaterial、contactMaterials：獨立遊戲碰撞彈性。
+				 * drag：目前手勢及預測落點，取消或換局即清除。 */
 				active: false, mode: "cpu", current: 0, thrower: 0, status: "setup", winner: null, coins: [],
 				selectedId: null, thrownId: null, aim: null, power: 0.8, turn: 1, elapsed: 0, quiet: 0,
-				epoch: 0, cpuTimer: null, players: [], difficulty: "normal", walls: [], aimMesh: null, log: [], contacts: []
+				epoch: 0, cpuTimer: null, players: [], difficulty: "normal", walls: [], aimMesh: null, log: [], contacts: [],
+				restitution: 0.65, coinMaterial: null, floorMaterial: null, contactMaterials: [], drag: null
 			};
 			boot();
 
@@ -210,6 +216,10 @@
 				floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 				state.world.addBody(floor);
 				state.floor = floor;
+				game.coinMaterial = new CANNON.Material("game-coin");
+				game.floorMaterial = new CANNON.Material("game-floor");
+				game.contactMaterials = [new CANNON.ContactMaterial(game.coinMaterial, game.coinMaterial, { /* friction、restitution：字形互撞時共用摩擦及彈性。 */ friction: 0.3, restitution: game.restitution }), new CANNON.ContactMaterial(game.coinMaterial, game.floorMaterial, { /* friction、restitution：桌面與牆的遊戲材質，不影響校準原型。 */ friction: 0.3, restitution: game.restitution })];
+				for (const material of game.contactMaterials) state.world.addContactMaterial(material);
 
 				// 建立固定視角，讓正反面及離桌高度容易觀察。
 				state.scene = new THREE.Scene();
@@ -833,7 +843,11 @@
 				getGameElement("restart-game").addEventListener("click", startGame);
 				getGameElement("throw-game").addEventListener("click", throwGameCoin);
 				getGameElement("back-setup").addEventListener("click", leaveGame);
-				getGameElement("game-board").addEventListener("pointerdown", pickGameAim);
+				getGameElement("game-board").addEventListener("pointerdown", beginGameDrag);
+				getGameElement("game-board").addEventListener("pointermove", updateGameDrag);
+				getGameElement("game-board").addEventListener("pointerup", endGameDrag);
+				getGameElement("game-board").addEventListener("pointercancel", cancelGameDrag);
+				getGameElement("game-restitution").addEventListener("input", () => updateGameRestitution(getGameElement("game-restitution").value));
 				getGameElement("mode").addEventListener("change", () => { getGameElement("difficulty").disabled = getGameElement("mode").value === "local"; });
 				getGameElement("game-power").addEventListener("input", () => {
 					game.power = Number(getGameElement("game-power").value);
@@ -934,7 +948,7 @@
 					state.camera.position.set(0, 11.5, 9);
 					state.camera.lookAt(0, 0, 0);
 					resize();
-					updateGameUI("第一手先放自己的薄片。選幣、點桌面瞄準，再投擲。");
+					updateGameUI("第一手先放自己的薄片。選幣，從桌面底部往上拖曳，放開投擲。");
 					return true;
 				}
 				catch (error) {
@@ -948,6 +962,9 @@
 			}
 
 			function setupGameBoard() {
+				cancelGameDrag();
+				state.floor.material = game.floorMaterial;
+				updateGameRestitution(getGameElement("game-restitution").value);
 				for (const wall of game.walls) state.world.removeBody(wall);
 				game.walls = [];
 				// 固定高牆防止薄片飛出可見桌面，牆本身不造成淘汰。
@@ -955,6 +972,7 @@
 				for (const values of positions) {
 					const wall = new CANNON.Body({ /* mass：固定邊界；shape：以半長度指定牆。 */ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(values[3], values[4], values[5])) });
 					wall.position.set(values[0], values[1], values[2]);
+					wall.material = game.floorMaterial;
 					state.world.addBody(wall);
 					game.walls.push(wall);
 				}
@@ -977,6 +995,8 @@
 			}
 
 			function leaveGame() {
+				cancelGameDrag();
+				state.floor.material = null;
 				++game.epoch;
 				clearTimeout(game.cpuTimer);
 				game.cpuTimer = null;
@@ -1012,9 +1032,9 @@
 
 			function makeGameBody(model, position) {
 				const body = new CANNON.Body({
-					/* mass：原始像素質量；linearDamping：共同線耗散；angularDamping：防守耗散。
+					/* mass：遊戲像素質量；material：遊戲彈性材質；linearDamping：共同線耗散；angularDamping：防守耗散。
 					 * allowSleep、sleepSpeedLimit、sleepTimeLimit：每枚獨立靜止控制。 */
-					mass: model.mass, linearDamping: 0.1, angularDamping: balanceProfile(model).angularDamping, allowSleep: true, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.6
+					mass: model.mass, material: game.coinMaterial, linearDamping: 0.1, angularDamping: balanceProfile(model).angularDamping, allowSleep: true, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.6
 				});
 				const orientation = new CANNON.Quaternion();
 				orientation.setFromEuler(0, model.angle, 0);
@@ -1099,6 +1119,7 @@
 					return false;
 				}
 
+				cancelGameDrag();
 				// 步驟 1：保存攻擊者並清除本次接觸旗標，桌面重投亦保留原物性。
 				game.thrower = game.current;
 				game.contacts = [];
@@ -1122,11 +1143,12 @@
 				// 在拿起桌面枚、改回合前預檢，拒絕時保留整場狀態。
 				const model = coin.model;
 				const power = Math.max(0, Math.min(1, Number(game.power) || 0));
-				const energy = Math.min(4 * balanceProfile(model).offense * power * power, 18 * model.mass, 0.72 / model.mass);
-				const height = Math.min(1.1, energy * 0.35 / (model.mass * config.gravity));
+				const energy = 0.9 * 0.3 * config.gravity + 4 * balanceProfile(model).offense * power * power;
+				const height = 0.9;
 				const remaining = Math.max(0, energy - model.mass * config.gravity * height);
-				const spinEnergy = remaining * 0.1;
-				const velocity = Math.sqrt(2 * (remaining - spinEnergy) / model.mass);
+				const linearEnergy = Math.min(remaining * 0.75, 18 * model.mass, 0.72 / model.mass);
+				const spinEnergy = remaining - linearEnergy;
+				const velocity = Math.sqrt(2 * linearEnergy / model.mass);
 				const vertical = velocity * 0.22;
 				const horizontal = velocity * Math.sqrt(1 - 0.22 ** 2);
 				const flightTime = (Math.sqrt(vertical * vertical + 2 * config.gravity * height) - vertical) / config.gravity;
@@ -1150,7 +1172,12 @@
 					if (blocked) continue;
 
 					body.velocity.set(vx, -vertical, vz);
-					const localSpin = new CANNON.Vec3(Math.sqrt(2 * spinEnergy / model.inertia.x), 0, 0);
+					// 下緣施力偏離重心：力臂叉乘發射方向，經主慣量轉成空中偏轉軸。
+					const grip = localPoint({ /* x、z：原始字框下緣握持點，重心不對稱會改變力臂。 */ x: 0, z: config.size / 2 }, model);
+					const torque = grip.cross(body.quaternion.conjugate().vmult(body.velocity));
+					const localSpin = new CANNON.Vec3(torque.x / model.inertia.x, torque.y / model.inertia.y, torque.z / model.inertia.z);
+					const rawSpinEnergy = 0.5 * (model.inertia.x * localSpin.x ** 2 + model.inertia.y * localSpin.y ** 2 + model.inertia.z * localSpin.z ** 2);
+					if (rawSpinEnergy > 0) localSpin.scale(Math.sqrt(spinEnergy / rawSpinEnergy), localSpin);
 					body.angularVelocity.copy(body.quaternion.vmult(localSpin));
 					return body;
 				}
@@ -1309,7 +1336,7 @@
 				const power = game.difficulty === "easy" ? 0.65 : game.difficulty === "hard" ? 0.95 : 0.85;
 				const attackScore = (candidate) => {
 					const mass = candidate.model.mass;
-					const energy = Math.min(4 * balanceProfile(candidate.model).offense * power * power, 18 * mass, 0.72 / mass);
+					const energy = 0.9 * 0.3 * config.gravity + 4 * balanceProfile(candidate.model).offense * power * power;
 					if (!target) return energy;
 
 					// 使用一維質量匹配的能量傳遞估計選枚，不預測或改寫翻面結果。
@@ -1363,6 +1390,64 @@
 					game.power = 1;
 					scheduleCpuTurn();
 				}, 900);
+			}
+
+			function updateGameRestitution(value) {
+				game.restitution = Math.max(0, Math.min(0.9, Number(value) || 0));
+				for (const material of game.contactMaterials) material.restitution = game.restitution;
+				getGameElement("game-restitution").value = game.restitution;
+				getGameElement("game-restitution-value").textContent = game.restitution.toFixed(2);
+			}
+
+			function beginGameDrag(event) {
+				if (!game.active || game.status !== "ready" || (game.mode === "cpu" && game.current === 1) || (event.button !== undefined && event.button !== 0)) return;
+
+				const board = getGameElement("game-board"), bounds = board.getBoundingClientRect();
+				if (event.clientY - bounds.top < bounds.height * 0.75) { pickGameAim(event); return; }
+
+				game.drag = { /* active、pointerId：單一有效手勢；startX、startY：底部起點；landing：碰撞前預測落點。 */ active: true, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, landing: game.aim.clone() };
+				board.setPointerCapture(event.pointerId);
+				board.focus({ /* preventScroll：拖曳不使畫面跳動。 */ preventScroll: true });
+				event.preventDefault();
+			}
+
+			function updateGameDrag(event) {
+				if (!game.drag?.active || event.pointerId !== game.drag.pointerId) return;
+
+				const bounds = getGameElement("game-board").getBoundingClientRect();
+				const distance = game.drag.startY - event.clientY;
+				if (distance < 12) { getGameElement("throw-preview").setAttribute("hidden", ""); return; }
+
+				pickGameAim(event);
+				game.power = Math.max(0.1, Math.min(1, distance / (bounds.height * 0.65)));
+				getGameElement("game-power").value = game.power;
+				getGameElement("game-power-value").textContent = `${Math.round(game.power * 100)}%`;
+				game.drag.landing.copy(game.aim);
+				const projected = game.drag.landing.clone().project(state.camera);
+				const arrow = getGameElement("throw-arrow"), preview = getGameElement("throw-preview");
+				preview.setAttribute("viewBox", `0 0 ${bounds.width} ${bounds.height}`);
+				arrow.setAttribute("x1", game.drag.startX - bounds.left);
+				arrow.setAttribute("y1", game.drag.startY - bounds.top);
+				arrow.setAttribute("x2", (projected.x + 1) * bounds.width / 2);
+				arrow.setAttribute("y2", (1 - projected.y) * bounds.height / 2);
+				preview.removeAttribute("hidden");
+				event.preventDefault();
+			}
+
+			function endGameDrag(event) {
+				if (!game.drag?.active || event.pointerId !== game.drag.pointerId) return;
+
+				updateGameDrag(event);
+				const valid = game.drag.startY - event.clientY >= 12;
+				cancelGameDrag();
+				if (valid) throwGameCoin();
+			}
+
+			function cancelGameDrag() {
+				const board = getGameElement("game-board");
+				if (game.drag && board.hasPointerCapture(game.drag.pointerId)) board.releasePointerCapture(game.drag.pointerId);
+				game.drag = null;
+				getGameElement("throw-preview").setAttribute("hidden", "");
 			}
 
 			function pickGameAim(event) {
@@ -1421,6 +1506,7 @@
 				const cpu = game.mode === "cpu" && game.current === 1;
 				getGameElement("throw-game").disabled = game.status !== "ready" || cpu;
 				getGameElement("game-power").disabled = game.status !== "ready" || cpu;
+				getGameElement("game-restitution").disabled = game.status !== "ready" || cpu;
 				getGameElement("game-power").value = game.power;
 				getGameElement("game-power-value").textContent = `${Math.round(game.power * 100)}%`;
 				const list = getGameElement("coin-list");

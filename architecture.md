@@ -137,6 +137,9 @@ flowchart TD
 | `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
 | `flushGameContacts` | 每步求解完成後清空接觸佇列；沿真實接觸傳遞六枚命中關係，再以目前姿態還原力臂、處理一次助推。 |
 | `prepareGameThrow` | 保持共同能量／速度預算，預檢八個入射方向的實際出生包圍盒；排除牆及既有堆疊，拒絕時不改回合或拿走枚。 |
+| `updateGameRestitution` | 更新獨立字形／桌面接觸材質的彈性與滑桿，不改校準接觸材質。 |
+| `beginGameDrag`、`updateGameDrag` | 限真人準備回合的底部單指手勢；記錄起点、由距離設定力度、投影落點及 SVG 箭頭；非底部仍可點選瞄準。 |
+| `endGameDrag`、`cancelGameDrag` | 有效上拖放開才投擲；清除指標捕獲、手勢與箭頭，短拖／取消不出手。 |
 | `applyGameEdgeAssist` | 在真实接觸力臂施加有動能增量上限的補充衝量，不指定結果。 |
 | `isGameCoinResting` | 分別檢查速度，BFS 真實支撐路徑，或驗證休眠快照；map 回呼記錄姿態證據。 |
 | `validGameSupportSnapshot` | every/some 檢查休眠路徑中的物件仍存在、未移位、未旋轉且未移動。 |
@@ -206,6 +209,8 @@ flowchart TD
 | `cpuAndRestartCheck`、`finishWithQueuedTimers`、`cpuTimerCheck` | AI 計畫、真正排程出手及過期世代隔離。 |
 | `assertPartition`、`assertBodyMask`、`mergedGeometryCheck` | 以獨立遮罩逐格驗合併區與實際方盒，不填洞、不遺漏、不重疊。 |
 | `gameEnergyCheck` | 真正出手的高度、平移與旋轉共用預算與速度／衝量上限。 |
+| `airborneSpinCheck`、`restitutionCheck` | 驗偏心握持力臂與主慣量的空中反應，以及滑桿對真實地面及雙片碰撞的反彈效果。 |
+| `pointerUiCheck` | 以真實滑鼠拖曳驗箭頭、預測落點、短拖取消、放開投擲與電腦回合鎖定。 |
 | `recordGroundSupport`、`sleepingSupportCheck` | 以真正桌面接觸和產品自然休眠測試紀錄與空中失效。 |
 | `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
 | `sampleRawRectangle`、內部 `knownImage`、`normalizedBalanceCheck` | 解析覆蓋率階段驗重量、完整投擲能量、幾何與重心保持，以及不污染校準模型。 |

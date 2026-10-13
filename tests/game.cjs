@@ -16,6 +16,7 @@ async function main() {
 		await page.goto("http://127.0.0.1:5173/");
 		await page.waitForFunction(() => window.__game?.state.world != null, null, { /* timeout：外部字體／模組載入容許時間；polling：不用已停用的動畫。 */ timeout: 45000, polling: 100 });
 		const result = await page.evaluate(runChecks);
+		await pointerUiCheck(page);
 		assert.deepEqual(errors, [], "遊戲頁不得發生執行錯誤");
 		assert.deepEqual(result.failures, [], result.failures.join("\n"));
 		console.log(JSON.stringify(result, null, 2));
@@ -29,9 +30,46 @@ async function instrumentRoute(route) {
 
 	// 只暴露測試接點，不更改規則、判面或碰撞處理。
 	const response = await route.fetch();
-	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, handleGameContact, flushGameContacts, localPoint }; </script>";
+	const expose = "window.__game = { game, state, config, startGame, throwGameCoin, finishGameTurn, selectGameCoin, planCpuTurn, makeGameBody, collisionRectangles, isGameCoinResting, sampleGlyph, balanceGameModel, handleGameContact, flushGameContacts, updateGameRestitution, localPoint }; </script>";
 	const html = (await response.text()).replace("</script>", expose);
 	await route.fulfill({ /* response：保留原回應；body：唯此測試可見的接點。 */ response, body: html });
+}
+
+async function pointerUiCheck(page) {
+	await page.evaluate(async () => { document.getElementById("mode").value = "local"; await window.__game.startGame(); });
+	await page.locator("#game-board").scrollIntoViewIfNeeded();
+	const bounds = await page.locator("#game-board").boundingBox();
+	assert.ok(bounds && bounds.height > 0, "拖曳必須在真實可見桌面進行");
+	const x = bounds.x + bounds.width / 2, bottom = bounds.y + bounds.height * 0.9, target = bounds.y + bounds.height * 0.55;
+	await page.mouse.move(x, bottom);
+	await page.mouse.down();
+	await page.mouse.move(x, bottom - 5);
+	await page.mouse.up();
+	assert.equal(await page.evaluate(() => window.__game.game.status), "ready", "短拖曳必須取消投擲");
+	assert.equal(await page.evaluate(() => window.__game.game.coins.filter((coin) => coin.body).length), 0, "取消不能產生物理薄片");
+	await page.mouse.move(x, bottom);
+	await page.mouse.down();
+	await page.mouse.move(x + 20, target);
+	const preview = await page.evaluate(() => {
+		const game = window.__game.game, arrow = document.getElementById("throw-arrow");
+		return { /* active、visible：手勢與箭頭狀態；coordinates、landing：有限預測資料。 */ active: game.drag?.active, visible: !document.getElementById("throw-preview").hasAttribute("hidden"), coordinates: ["x1", "y1", "x2", "y2"].map((key) => Number(arrow.getAttribute(key))), landing: game.drag?.landing.toArray() };
+	});
+	assert.ok(preview.active && preview.visible && preview.coordinates.every(Number.isFinite) && preview.landing.every(Number.isFinite), "長拖曳必須顯示有限箭頭與預測落點");
+	await page.mouse.up();
+	const released = await page.evaluate(() => {
+		const { game, config } = window.__game, body = game.coins.find((coin) => coin.id === game.thrownId)?.body;
+		const height = body.position.y - config.thickness / 2 - 0.003;
+		const time = (body.velocity.y + Math.sqrt(body.velocity.y ** 2 + 2 * config.gravity * height)) / config.gravity;
+		return { /* status、hidden、active：放開後清理；predictionError：無碰撞拋物線終點與箭頭落點距離。 */ status: game.status, hidden: document.getElementById("throw-preview").hasAttribute("hidden"), active: !!game.drag, predictionError: Math.hypot(body.position.x + body.velocity.x * time - game.aim.x, body.position.z + body.velocity.z * time - game.aim.z) };
+	});
+	assert.ok(released.status === "simulating" && released.hidden && !released.active && released.predictionError < 1e-8, `放開應真正投擲，收起箭頭，並保留無碰撞預測落點：${JSON.stringify(released)}`);
+	await page.evaluate(async () => { document.getElementById("mode").value = "cpu"; await window.__game.startGame(); window.__game.game.current = 1; });
+	await page.mouse.move(x, bottom);
+	await page.mouse.down();
+	await page.mouse.move(x, target);
+	await page.mouse.up();
+	assert.ok(await page.evaluate(() => !window.__game.game.drag && window.__game.game.status === "ready" && window.__game.game.coins.every((coin) => !coin.body)), "電腦回合不可由玩家拖曳偷投");
+	console.log("拖曳：短拖取消、箭頭與落點、放開投擲、CPU 回合鎖定通過");
 }
 
 async function runChecks() {
@@ -102,6 +140,7 @@ async function runChecks() {
 	async function newGame(mode = "local") {
 		// 從真正設定流程建立六枚，避免由測試自行製造初始所有權。
 		document.getElementById("mode").value = mode;
+		document.getElementById("game-restitution").value = 0.65;
 		for (const player of [1, 2]) {
 			document.getElementById(`p${player}-name`).value = `玩家${player}`;
 			const font = document.getElementById(`p${player}-font`);
@@ -418,9 +457,9 @@ async function runChecks() {
 			const rotation = 0.5 * (model.inertia.x * omega.x ** 2 + model.inertia.y * omega.y ** 2 + model.inertia.z * omega.z ** 2);
 			const potential = body.mass * api.config.gravity * (body.position.y - floorHeight);
 			const coverage = model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
-			const budget = 4 * (0.75 - 0.5 * coverage) * power ** 2;
-			const capped = Math.min(budget, 18 * model.mass, 0.72 / model.mass);
-			near(kinetic + rotation + potential, capped, "高度、平移與旋轉必須共用同一實際投擲能量");
+			const budget = 0.9 * 0.3 * api.config.gravity + 4 * (0.75 - 0.5 * coverage) * power ** 2;
+			near(kinetic + rotation + potential, budget, "提高出生高度後，位能、平移與旋轉仍須共用明示總預算");
+			near(body.position.y - floorHeight, 0.9, "所有力度均須由承諾的較高位置投出");
 			requireCondition(body.velocity.length() <= 6 + 1e-9 && body.mass * body.velocity.length() <= 1.2 + 1e-9, "遊戲發射也不得突破速度或衝量上限");
 			requireCondition(kinetic >= 0 && rotation >= 0 && potential >= -1e-9, "不可用負能量掩蓋超額發射");
 		}
@@ -477,7 +516,7 @@ async function runChecks() {
 			const body = coin.body, omega = body.quaternion.conjugate().vmult(body.angularVelocity);
 			const rotation = 0.5 * (balanced.inertia.x * omega.x ** 2 + balanced.inertia.y * omega.y ** 2 + balanced.inertia.z * omega.z ** 2);
 			const energy = 0.5 * body.mass * body.velocity.lengthSquared() + rotation + body.mass * api.config.gravity * (body.position.y - floorHeight);
-			near(energy, 3 - 2 * coverage, "實際投擲能量必須等於未被上限截斷的進攻預算");
+			near(energy, 0.9 * 0.3 * api.config.gravity + 3 - 2 * coverage, "加上共同高拋位能基準後，實際投擲總能量仍須依進攻份額下降");
 			near(body.mass, mass, "規範化質量必須直接作用於剛體");
 			near(body.angularDamping, 0.08 + 0.24 * (0.25 + 0.5 * coverage), "高覆蓋率防守耗散必須直接作用於剛體");
 			requireCondition(body.mass > previousMass && energy < previousEnergy && body.angularDamping > previousDamping, "密度上升必須提高質量與耗散、嚴格降低实际發射能量");
@@ -614,6 +653,8 @@ async function runChecks() {
 			await newGame();
 			const selected = owned(0)[0], enemy = owned(1)[0];
 			place(enemy);
+			enemy.body.position.y = floorHeight + 0.9;
+			enemy.body.aabbNeedsUpdate = true;
 			if (fromBoard) {
 				for (const [index, coin] of owned(0).entries()) place(coin, -3 + 3 * index, -2.5);
 			}
@@ -634,7 +675,7 @@ async function runChecks() {
 		await newGame();
 		const enemy = owned(1)[0];
 		const obstacle = place(enemy, -2, 2);
-		obstacle.position.y = 0.5;
+		obstacle.position.y = floorHeight + 0.9;
 		obstacle.aabbNeedsUpdate = true;
 		const selected = owned(0)[0];
 		requireCondition(api.selectGameCoin(selected.id), "安全出生應接受合法手中枚");
@@ -651,8 +692,71 @@ async function runChecks() {
 		}
 		const body = selected.body, energy = kineticEnergy(body) + body.mass * api.config.gravity * (body.position.y - floorHeight);
 		const coverage = selected.model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
-		near(energy, 3 - 2 * coverage, "另尋安全出生方向不可增添高度、平移或旋轉能量");
+		near(energy, 0.9 * 0.3 * api.config.gravity + 3 - 2 * coverage, "另尋安全出生方向不可增添高度、平移或旋轉能量");
 		assertSix();
+	}
+
+	async function airborneSpinCheck() {
+		const spins = [];
+		for (const dimensions of [[4, 12], [12, 4]]) {
+			await newGame();
+			const coin = owned(0)[0];
+			coin.model = api.balanceGameModel(sampleRawRectangle(...dimensions));
+			api.game.power = 1;
+			requireCondition(api.selectGameCoin(coin.id) && api.throwGameCoin(), "不同質量分布必須由真實發射進入空中");
+			const body = coin.body, model = coin.model;
+			const grip = api.localPoint({ /* x、z：既定下緣握持點，用來獨立檢查角動量方向。 */ x: 0, z: api.config.size / 2 }, model);
+			const velocity = body.quaternion.conjugate().vmult(body.velocity), omega = body.quaternion.conjugate().vmult(body.angularVelocity);
+			const torque = grip.cross(velocity), momentum = omega.clone();
+			for (const axis of ["x", "y", "z"]) momentum[axis] *= model.inertia[axis];
+			requireCondition(torque.length() > 0 && momentum.length() > 0, "偏心發射必須產生非零空中角動量");
+			requireCondition(torque.cross(momentum).length() / (torque.length() * momentum.length()) < 1e-8 && torque.dot(momentum) > 0, "角動量方向必須由力臂叉乘速度決定，不能套固定旋轉軸");
+			spins.push(body.angularVelocity.clone());
+		}
+		requireCondition(spins[0].distanceTo(spins[1]) > 0.1, "相同覆蓋率但分布不同的字形必須有不同空中角速回應");
+	}
+
+	async function restitutionCheck() {
+		const floorSpeeds = [], pairSpeeds = [];
+		for (const restitution of [0, 0.9]) {
+			await newGame();
+			const slider = document.getElementById("game-restitution");
+			slider.value = restitution;
+			slider.dispatchEvent(new Event("input", { /* bubbles：與真正滑桿更新使用相同事件路徑。 */ bubbles: true }));
+			near(api.game.restitution, restitution, "滑桿必須更新實際遊戲反彈設定");
+			near(api.state.world.defaultContactMaterial.restitution, 0.1, "遊戲反彈不可污染實驗室預設");
+			const body = place(owned(0)[0]);
+			body.position.y = 1;
+			body.aabbNeedsUpdate = true;
+			let maximum = 0, contacts = 0;
+			const observeFloor = (event) => { if (event.body === api.state.floor) contacts++; };
+			body.addEventListener("collide", observeFloor);
+			for (let tick = 0; tick < 180; tick++) { step(1); maximum = Math.max(maximum, body.velocity.y); }
+			requireCondition(contacts > 0, "反彈驗收必須真正接觸桌面");
+			floorSpeeds.push(maximum);
+
+			await newGame();
+			api.updateGameRestitution(restitution);
+			const attacker = place(owned(0)[0], -3), victim = place(owned(1)[0], 0);
+			const gravity = api.state.world.gravity.clone();
+			try {
+				// 暫停重力與轉動，只隔離同質兩片的一維接觸反彈；恢復後不影響其他驗收。
+				api.state.world.gravity.set(0, 0, 0);
+				for (const target of [attacker, victim]) { target.position.y = 2; target.angularFactor.set(0, 0, 0); target.linearDamping = 0; target.aabbNeedsUpdate = true; target.updateAABB(); }
+				attacker.position.x += victim.aabb.lowerBound.x - attacker.aabb.upperBound.x - 0.01;
+				attacker.aabbNeedsUpdate = true;
+				attacker.velocity.x = 2;
+				let hit = false;
+				const observePair = (event) => { if (event.body === victim) hit = true; };
+				attacker.addEventListener("collide", observePair);
+				for (let tick = 0; tick < 30 && !hit; tick++) step(1);
+				requireCondition(hit && victim.velocity.x > 0 && attacker.velocity.x < 2, "双方必須透過真正碰撞交換動量");
+				pairSpeeds.push(victim.velocity.x - attacker.velocity.x);
+			}
+			finally { api.state.world.gravity.copy(gravity); }
+		}
+		requireCondition(floorSpeeds[1] > floorSpeeds[0] + 0.5, "高反彈設定必須提高真實桌面回彈速度");
+		requireCondition(pairSpeeds[1] > pairSpeeds[0] + 0.5, "高反彈設定必須提高真實雙片碰撞分離速度");
 	}
 
 	function recordGroundSupport(coin) {
@@ -761,6 +865,8 @@ async function runChecks() {
 	await check("真實接觸求解後助推、一次性與重開佇列清理", deferredContactCheck);
 	await check("高處真實邊界接觸保留薄片及所有權", highBoundaryCheck);
 	await check("安全出生保留能量、受阻拒絕不改原對局", spawnSafetyCheck);
+	await check("偏心握持及不同質量分布產生空中角運動", airborneSpinCheck);
+	await check("反彈滑桿實際影響桌面及雙片碰撞", restitutionCheck);
 	await check("睡眠接觸省略後仍停止、移至空中快取失效", sleepingSupportCheck);
 	await check("睡眠疊放支撐、捕獲下層後喚醒與失效", supportedStackRemovalCheck);
 	await check("新投擲清除前回合支撐紀錄並喚醒桌面枚", newThrowInvalidatesSupportCheck);
