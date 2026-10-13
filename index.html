@@ -103,12 +103,12 @@
 				</div>
 				<div class="actions"><button id="start-game" class="primary" disabled>開始對戰</button><button id="open-lab" hidden>字形物理測試</button></div>
 				<p id="setup-status" role="status" aria-live="polite">正在載入 3D 與物理引擎…</p>
-				<details><summary>怎麼玩？</summary><p>雙方各三枚，輪流投一次。手上有幣就先用手上的，手上沒幣才拿起桌上自己的幣。只能從底部拖曳瞄準，選擇投擲仰角後放開投擲；滑動越快，投得越快；其他物性由文字決定。被命中的對手薄片落地停止後，朝上面與受擊前相反，就收回你的手上再使用；彈起但朝上面沒有改變不算。自己的薄片不會被自己淘汰。取得全部六枚才獲勝。</p><p>筆畫密集偏防守，稀疏偏進攻；邊緣小面積命中有撬起加成。外觀保留原字形，側邊藍／橘色顯示目前主人。</p></details>
+				<details><summary>怎麼玩？</summary><p>雙方各三枚，輪流投一次。手上有幣就先用手上的，手上沒幣才拿起桌上自己的幣。只能從底部拖曳瞄準，選擇投擲仰角後放開投擲；滑動越快，投得越快；其他物性由文字決定。被命中的對手薄片落地停止後，朝上面與受擊前相反，就收回你的手上再使用；彈起但朝上面沒有改變不算。自己的薄片不會被自己淘汰。取得全部六枚才獲勝。</p><p>筆畫密集偏防守，稀疏偏進攻；邊緣小面積命中有撬起加成；碰撞會強力反彈，首次落地有25%機率爆炸擊飛周圍薄片。外觀保留原字形，側邊藍／橘色顯示目前主人。</p></details>
 			</section>
 			<section id="match" hidden>
 				<div class="scoreboard"><div id="score-0" class="score player-0"></div><div id="score-1" class="score player-1"></div></div>
 				<div class="match-layout">
-					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從底部往上拖曳，放開投擲"><div class="launch-zone">從底部往上拖曳，快滑快投</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">底部拖曳：滑越快，投得越快。箭頭指向預計落點；首次落地會震動附近薄片。穩定落地後朝上面與受擊前相反才被奪取。</p></div>
+					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從底部往上拖曳，放開投擲"><div class="launch-zone">從底部往上拖曳，快滑快投</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">底部拖曳：滑越快，投得越快。箭頭指向預計落點；首次落地震動附近薄片，25%機率大範圍爆炸。穩定落地後朝上面與受擊前相反才被奪取。</p></div>
 					<aside class="panel battle-controls">
 						<div><h2 id="turn-label"></h2><p id="match-status" role="status" aria-live="polite"></p><div id="winner" hidden></div></div>
 						<div><div id="coin-list"></div><p id="selected-stats" class="legend"></p></div>
@@ -218,6 +218,9 @@
 				state.world.defaultContactMaterial.friction = 0.4;
 				state.world.defaultContactMaterial.restitution = 0.1;
 				state.world.addEventListener("postStep", flushGameContacts);
+				// 保留原求解器，僅在解真接觸前處理低速微彈，不降低高速撞靜止片的彈性。
+				const solveContacts = state.world.solver.solve.bind(state.world.solver);
+				state.world.solver.solve = (dt, world) => { updateGameRestitution(world.contacts); return solveContacts(dt, world); };
 				const floor = new CANNON.Body({ /* mass：零表示固定桌面；shape：不會漏接像素格的無限平面。 */ mass: 0, shape: new CANNON.Plane() });
 				floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 				state.world.addBody(floor);
@@ -1182,7 +1185,7 @@
 					/* ...balance：文字攻防及阻尼；energy、height：字形決定的高拋預算。
 					 * restitution、friction：稀疏字較彈、密字較抓地；使用者不可調整。 */
 					...balance, energy: 1.05 * 0.3 * config.gravity + 4 * balance.offense, height: 0.9 + 0.2 * balance.offense,
-					restitution: 0.22 + 0.12 * balance.offense / 0.75, friction: 0.3 + 0.2 * balance.defense
+					restitution: 0.72 + 0.2 * balance.offense / 0.75, friction: 0.3 + 0.2 * balance.defense
 				};
 			}
 
@@ -1258,6 +1261,18 @@
 				for (const entry of contacts) applyGroundImpact(entry);
 			}
 
+			function updateGameRestitution(contacts) {
+				if (!game.active) return;
+
+				// 以接觸點相對法向速度判定：強碰撞高彈性，低速接地耗散以自然休眠。
+				for (const contact of contacts) {
+					const ownA = game.coins.some((coin) => coin.body === contact.bi), ownB = game.coins.some((coin) => coin.body === contact.bj);
+					if ((!ownA && !ownB) || Math.abs(contact.getImpactVelocityAlongNormal()) >= 0.5) continue;
+
+					contact.restitution = ownA && ownB ? 0.22 * 0.22 : 0.22;
+				}
+			}
+
 			function applyGroundImpact(entry) {
 				if (!game.active || game.status !== "simulating" || game.groundImpactUsed || entry.other !== state.floor) return false;
 
@@ -1265,13 +1280,14 @@
 				const impact = Math.abs(Number(entry.impact) || 0);
 				if (!source || impact < 0.2 || !entry.groundPoint) return false;
 
-				// 步驟 1：僅真落地接觸觸發一次，共享預算隨向地面衝擊速度及字形進攻配置變化。
+				// 步驟 1：僅首次真落地抽一次爆炸，共享預算隨向地面衝擊速度及字形進攻配置變化。
 				game.groundImpactUsed = true;
 				const origin = entry.groundPoint.clone();
 				origin.y = 0.03;
 				const offense = glyphPhysicsProfile(source.model).offense;
-				const radius = 2.2 + 0.8 * offense;
-				const energyBudget = Math.min(2.4, 0.12 * source.model.mass * impact * impact * offense);
+				const explosive = Math.random() < 0.25;
+				const radius = (2.2 + 0.8 * offense) * (explosive ? 2.5 : 1);
+				const energyBudget = Math.min(explosive ? 16 : 2.4, (explosive ? 0.9 : 0.12) * source.model.mass * impact * impact * offense);
 				const targets = game.coins.filter((coin) => coin !== source && coin.body).map((coin) => {
 					const distance = coin.body.position.distanceTo(origin);
 					return { /* coin：真場上枚，含己方；distance：三維距離；weight：範圍內平方衰減。 */ coin, distance, weight: Math.max(0, 1 - distance / radius) ** 2 };
@@ -1301,7 +1317,7 @@
 					const b = body.velocity.dot(direction) + angular.dot(torque);
 					const energy = energyBudget * target.weight / totalWeight;
 					const cap = (-b + Math.sqrt(b * b + 2 * k * energy)) / k;
-					const impulse = Math.min(0.65, cap, 0.35 * body.mass * impact * (1 - target.distance / radius));
+					const impulse = Math.min(explosive ? 2.4 : 0.65, cap, (explosive ? 1.25 : 0.35) * body.mass * impact * (1 - target.distance / radius));
 					if (impulse <= 0) continue;
 
 					body.wakeUp();
@@ -1310,9 +1326,9 @@
 					affected.push({ /* id、distance：實際受波枚；energyBudget：分配的上限；impulse：實際施加量。 */ id: coin.id, distance: target.distance, energyBudget: energy, impulse });
 				}
 
-				// 步驟 3：藍色衝擊環只呈現已發生的震波，不帶剛體、不直接決定翻面。
-				game.lastGroundImpact = { /* sourceId、origin、radius、impact：真落地震源；energyBudget：共享總上限；affected：真正受力資料。 */ sourceId: source.id, origin, radius, impact, energyBudget, affected };
-				spawnGroundShockEffect(origin, radius);
+				// 步驟 3：普通藍色／爆炸橘色衝擊環只呈現震波，不帶剛體、不直接決定翻面。
+				game.lastGroundImpact = { /* sourceId、origin、radius、impact：真落地震源；explosive：本手唯一抽選結果；energyBudget：共享總上限；affected：真正受力資料。 */ sourceId: source.id, origin, radius, impact, explosive, energyBudget, affected };
+				spawnGroundShockEffect(origin, radius, explosive);
 				fitBattleCamera();
 				return true;
 			}
@@ -1667,25 +1683,34 @@
 				game.effects.push({ /* type：合法捕獲金色特效；group、ring、sparks：視覺物件；elapsed、duration：生命週期；radius：相機納入範圍。 */ type: "capture", group, ring, sparks, elapsed: 0, duration: 0.8, radius: 2 });
 			}
 
-			function spawnGroundShockEffect(origin, radius) {
+			function spawnGroundShockEffect(origin, radius, explosive) {
 				const group = new THREE.Group();
 				group.position.copy(origin);
-				const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.025, 8, 48), new THREE.MeshBasicMaterial({ /* color、transparent、opacity：地面藍色震波，不建立碰撞物件。 */ color: 0x48a9c4, transparent: true, opacity: 0.8 }));
+				const ring = new THREE.Mesh(new THREE.TorusGeometry(0.4, explosive ? 0.06 : 0.025, 8, 48), new THREE.MeshBasicMaterial({ /* color：普通藍色／爆炸橘色；transparent、opacity：純視覺震波，不建立碰撞物件。 */ color: explosive ? 0xef7138 : 0x48a9c4, transparent: true, opacity: 0.8 }));
 				ring.rotation.x = -Math.PI / 2;
 				group.add(ring);
+				const sparks = [];
+				if (explosive) {
+					for (let i = 0; i < 18; i++) {
+						const spark = new THREE.Mesh(new THREE.OctahedronGeometry(0.12), new THREE.MeshBasicMaterial({ /* color、transparent、opacity：爆炸火花，只呈現物理衝擊已發生。 */ color: 0xffa442, transparent: true, opacity: 1 }));
+						group.add(spark);
+						sparks.push(spark);
+					}
+				}
 				state.scene.add(group);
-				game.effects.push({ /* type：落地震波；group、ring、sparks：純視覺；elapsed、duration：0.6秒；radius：真衝擊範圍。 */ type: "shock", group, ring, sparks: [], elapsed: 0, duration: 0.6, radius });
+				game.effects.push({ /* type：普通shock／爆炸explosion；group、ring、sparks：純視覺；elapsed、duration：普通0.6秒／爆炸0.9秒；radius：真衝擊範圍。 */ type: explosive ? "explosion" : "shock", group, ring, sparks, elapsed: 0, duration: explosive ? 0.9 : 0.6, radius });
 			}
 
 			function animateCaptureEffects(delta) {
 				for (const effect of game.effects) {
 					effect.elapsed += delta;
 					const progress = Math.min(1, effect.elapsed / effect.duration);
-					effect.ring.scale.setScalar(effect.type === "shock" ? Math.max(0.1, progress * effect.radius / 0.4) : 1 + progress * 4);
+					effect.ring.scale.setScalar(effect.type !== "capture" ? Math.max(0.1, progress * effect.radius / 0.4) : 1 + progress * 4);
 					effect.ring.material.opacity = 1 - progress;
 					effect.sparks.forEach((spark, index) => {
 						const angle = index * Math.PI * 2 / effect.sparks.length;
-						spark.position.set(Math.cos(angle) * progress * 1.8, Math.sin(progress * Math.PI) * 0.3, Math.sin(angle) * progress * 1.8);
+						const spread = effect.type === "explosion" ? effect.radius : 1.8;
+						spark.position.set(Math.cos(angle) * progress * spread, Math.sin(progress * Math.PI) * (effect.type === "explosion" ? 1.2 : 0.3), Math.sin(angle) * progress * spread);
 						spark.material.opacity = 1 - progress;
 					});
 				}

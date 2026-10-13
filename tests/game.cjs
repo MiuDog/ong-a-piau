@@ -117,7 +117,7 @@ async function flickSpeedCheck(page) {
 async function runChecks() {
 
 	const api = window.__game;
-	const passed = [], failures = [];
+	const passed = [], failures = [], measurements = [];
 	const floorHeight = api.config.thickness / 2 + 0.003;
 
 	function requireCondition(value, label) {
@@ -186,6 +186,9 @@ async function runChecks() {
 	}
 
 	async function check(label, action) {
+		// 一般規則固定非爆炸；機率案例自行覆寫並由 finally 恢復全域隨機函式。
+		const originalRandom = Math.random;
+		Math.random = () => 0.9;
 		try {
 			await action();
 			passed.push(label);
@@ -193,6 +196,7 @@ async function runChecks() {
 		catch (error) {
 			failures.push(`${label}: ${error.message}`);
 		}
+		finally { Math.random = originalRandom; }
 	}
 
 	async function newGame(mode = "local") {
@@ -255,6 +259,15 @@ async function runChecks() {
 
 	function step(ticks = 360) {
 		for (let tick = 0; tick < ticks; tick++) api.state.world.step(1 / 120);
+	}
+
+	function settleGameBodies() {
+		// 高彈性允許較長真步進；仍逐枚要求原速度與真支撐條件，最多遊戲同款35秒。
+		for (let tick = 0; tick < 4200; tick++) {
+			step(1);
+			if (api.game.coins.every((coin) => !coin.body || api.isGameCoinResting(coin))) return;
+		}
+		throw new Error(`35秒後仍未真停止：${JSON.stringify(api.game.coins.filter((coin) => coin.body && !api.isGameCoinResting(coin)).map((coin) => ({ id: coin.id, y: coin.body.position.y, v: coin.body.velocity.length(), w: coin.body.angularVelocity.length() })))}`);
 	}
 
 	function beginThrow() {
@@ -323,6 +336,7 @@ async function runChecks() {
 		thrown.body.addEventListener("collide", recordContact);
 		step(480);
 		requireCondition(contacts > 0 && enemy.hit, "必須經真實剛體碰撞標記敵方受影響");
+		settleGameBodies();
 		requireCondition(api.isGameCoinResting(enemy), "捕獲前必須有真實穩定支撐");
 		requireCondition(captureEffects().length === 0, "只有碰撞或翻面尚未結算時不可提前播捕獲特效");
 		const previousBody = enemy.body;
@@ -431,7 +445,7 @@ async function runChecks() {
 				enemy.body.aabbNeedsUpdate = true;
 			}
 			enemy.hit = true;
-			step();
+			settleGameBodies();
 			requireCondition(api.isGameCoinResting(enemy), "相對翻面結果仍必須取得真實支撐並停止");
 			requireCondition(captureEffects().length === 0, "相對翻面尚未结算時不得提前播成功特效");
 			api.finishGameTurn();
@@ -451,7 +465,7 @@ async function runChecks() {
 			step();
 			enemy.body.wakeUp();
 			enemy.supportSnapshot = null;
-			if (initial === "airborne") enemy.body.position.y = 5;
+			if (initial === "airborne") { enemy.body.position.y = 5; enemy.body.aabbNeedsUpdate = true; step(1); }
 			if (initial === "moving") enemy.body.velocity.x = 0.5;
 			if (initial === "standing") {
 				enemy.body.quaternion.setFromEuler(Math.PI / 2, 0, 0);
@@ -470,7 +484,7 @@ async function runChecks() {
 			place(enemy, -3);
 			backface(enemy);
 			enemy.hit = true;
-			step();
+			settleGameBodies();
 			requireCondition(api.isGameCoinResting(enemy), "缺基準案例的最終背面必須确實停止並接地");
 			api.finishGameTurn(true);
 			requireCondition(enemy.owner === 1 && enemy.body && captureEffects().length === 0, "缺少可靠初始面向時，即使後來命中且背面停止也不能捕獲或播成功特效");
@@ -488,7 +502,7 @@ async function runChecks() {
 		const thrown = beginThrow();
 		for (const coin of enemies) backface(coin);
 		place(thrown, 0, 3);
-		step();
+		settleGameBodies();
 		enemies[0].hit = enemies[1].hit = true;
 		enemies[2].hit = false;
 		api.finishGameTurn();
@@ -506,7 +520,7 @@ async function runChecks() {
 		const finalThrow = beginThrow();
 		for (const coin of finalEnemies) backface(coin);
 		place(finalThrow, 0, 3);
-		step();
+		settleGameBodies();
 		for (const coin of finalEnemies) coin.hit = true;
 		api.finishGameTurn();
 		requireCondition(owned(0).length === 6 && owned(1).length === 0 && api.game.status === "won" && api.game.winner === 0, "僅六比零才宣告正確攻方勝利");
@@ -910,6 +924,84 @@ async function runChecks() {
 		}
 	}
 
+	async function explosionBranchCheck() {
+		const originalRandom = Math.random;
+		try {
+			for (const roll of [0.25, 0.249]) {
+				for (const moving of [false, true]) {
+					await newGame();
+					const friendly = owned(0)[1], hand = owned(0)[2], [nearEnemy, extended, outside] = owned(1);
+					const model = api.balanceGameModel(sampleRawRectangle(2, 2));
+					for (const coin of [friendly, nearEnemy, extended, outside]) coin.model = model;
+					place(friendly, -1);
+					place(nearEnemy, 1);
+					place(extended, 4);
+					place(outside, 9);
+					step();
+					const source = beginThrow(), impact = 8, origin = source.body.position.clone().set(0, 0.03, 0);
+					const offense = 0.75 - 0.5 * source.model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
+					const explosive = roll < 0.25, radius = (2.2 + 0.8 * offense) * (explosive ? 2.5 : 1);
+					const budget = Math.min(explosive ? 16 : 2.4, (explosive ? 0.9 : 0.12) * source.model.mass * impact ** 2 * offense);
+					const snapshots = new Map(), targets = [friendly, nearEnemy, extended, outside];
+					for (const coin of targets) {
+						const body = coin.body;
+						body.wakeUp();
+						body.velocity.set(moving ? -0.8 : 0, moving ? -3 : 0, moving ? 1 : 0);
+						body.angularVelocity.set(moving ? 2 : 0, moving ? -1 : 0, moving ? 4 : 0);
+						snapshots.set(coin.id, { /* energy、velocity：量測真施力與交叉項；position、quaternion、owner：爆炸只能施力，不能替規則判結果。 */ energy: kineticEnergy(body), velocity: body.velocity.clone(), position: body.position.clone(), quaternion: body.quaternion.clone(), owner: coin.owner });
+					}
+					let draws = 0;
+					Math.random = () => { draws++; return roll; };
+					const entry = { /* body、other、impact、groundPoint：施力隔離輸入；真 floor 觸發另由生命週期案例驗證。 */ body: source.body, other: api.state.floor, impact, groundPoint: origin };
+					requireCondition(!api.applyGroundImpact({ ...entry, impact: 0.19 }) && draws === 0, "未達合法落地門檻不可先抽爆炸機率");
+					requireCondition(api.applyGroundImpact(entry), "合法首次落地必須抽選普通或爆炸分支");
+					const record = api.game.lastGroundImpact, effect = api.game.effects.find((item) => item.type === (explosive ? "explosion" : "shock"));
+					requireCondition(record.explosive === explosive && effect && captureEffects().length === 0, "25% 門檻兩側須進入對應分支，不得冒充捕獲成功");
+					near(record.radius, radius, "爆炸作用半徑必須為普通半徑的2.5倍");
+					near(effect.duration, explosive ? 0.9 : 0.6, "普通及爆炸效果須具各自生命週期");
+					if (explosive) requireCondition(effect.sparks.length > 0, "爆炸須有獨立碎光視覺");
+					const affected = targets.filter((coin) => snapshots.get(coin.id).position.distanceTo(origin) < radius);
+					const weight = (coin) => (1 - snapshots.get(coin.id).position.distanceTo(origin) / radius) ** 2;
+					const totalWeight = affected.reduce((sum, coin) => sum + weight(coin), 0);
+					let deltaTotal = 0;
+					for (const coin of targets) {
+						const body = coin.body, before = snapshots.get(coin.id), delta = kineticEnergy(body) - before.energy;
+						const impulse = body.mass * body.velocity.distanceTo(before.velocity);
+						if (affected.includes(coin)) {
+							requireCondition(coin.hit && impulse > 0 && impulse <= (explosive ? 2.4 : 0.65) + 1e-8, "普通及爆炸真衝量須遵守各分支上限");
+							requireCondition(delta <= budget * weight(coin) / totalWeight + 1e-8, "爆炸分配預算亦須涵蓋既有平移及角速的完整動能");
+							deltaTotal += delta;
+						}
+						else requireCondition(!coin.hit && impulse < 1e-10, "各分支範圍外不可受力或標記命中");
+						near(body.position.distanceTo(before.position), 0, "爆炸不能直接改位置");
+						for (const axis of ["x", "y", "z", "w"]) near(body.quaternion[axis], before.quaternion[axis], "爆炸不能強迫翻面");
+						requireCondition(coin.owner === before.owner, "爆炸施力不能直接改所有權");
+					}
+					requireCondition(deltaTotal <= budget + 1e-8 && extended.hit === explosive, "爆炸須推動普通圈外的枚，且多枚總動能增量不超共享上限");
+					if (!moving) measurements.push({ /* branch：固定機率分支；nearDistance：近端距離；deltaSpeed、deltaUp、angularSpeed：施力後真實速度，不冒充後續最高點。 */ branch: explosive ? "explosion" : "ordinary", nearDistance: 1, deltaSpeed: nearEnemy.body.velocity.distanceTo(snapshots.get(nearEnemy.id).velocity), deltaUp: nearEnemy.body.velocity.y - snapshots.get(nearEnemy.id).velocity.y, angularSpeed: nearEnemy.body.angularVelocity.length() });
+					requireCondition(!hand.body && !hand.hit && hand.owner === 0, "爆炸也不能影響手中枚");
+					const drawsAfter = draws, energiesAfter = targets.map((coin) => kineticEnergy(coin.body));
+					requireCondition(!api.applyGroundImpact(entry) && draws === drawsAfter && api.game.lastGroundImpact === record, "本手重複落地不得再抽機率或替換第一次結果");
+					for (let index = 0; index < targets.length; index++) near(kineticEnergy(targets[index].body), energiesAfter[index], "爆炸重入不可累加擊飛能量");
+					const physicalState = JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.body?.id]));
+					api.animateCaptureEffects(1);
+					requireCondition(api.game.effects.length === 0 && JSON.stringify(api.game.coins.map((coin) => [coin.id, coin.owner, coin.body?.id])) === physicalState, "爆炸效果到期只能清理視覺");
+					place(source, 12);
+					place(friendly, -12);
+					backface(friendly);
+					settleGameBodies();
+					requireCondition(friendly.faceBeforeThrow === 1 && api.isGameCoinResting(friendly), "爆炸己方免疫仍須有真初始基準及真最終支撐");
+					api.finishGameTurn(true);
+					requireCondition(friendly.owner === 0 && friendly.body, "爆炸擊中己方並翻面仍不得自行捕獲");
+					await newGame();
+					requireCondition(!api.game.groundImpactUsed && api.game.lastGroundImpact == null && api.game.effects.length === 0, "重開必須清空爆炸分支紀錄及特效");
+					assertSix();
+				}
+			}
+		}
+		finally { Math.random = originalRandom; }
+	}
+
 	async function infiniteBattlefieldCheck() {
 		await newGame();
 		requireCondition(!api.game.walls?.length && api.state.world.bodies.every((body) => body.mass > 0 || body === api.state.floor), "戰場只能有無限地面，不能殘留隱形物理牆");
@@ -1045,7 +1137,7 @@ async function runChecks() {
 			coin.model = model;
 			const body = place(coin);
 			const coverage = model.cells.reduce((sum, cell) => sum + cell.alpha, 0) / api.config.grid ** 2;
-			const restitution = 0.22 + 0.12 * (0.75 - 0.5 * coverage) / 0.75;
+			const restitution = 0.72 + 0.2 * (0.75 - 0.5 * coverage) / 0.75;
 			near(body.material.restitution, restitution, "每枚反彈材質必須由自身字形覆蓋率導出");
 			near(body.material.friction, 0.3 + 0.2 * (0.25 + 0.5 * coverage), "每枚摩擦材質必須由自身字形防守份額導出");
 			near(api.state.floor.material.restitution, 1, "桌面材質與個別字形共同決定反彈");
@@ -1082,10 +1174,31 @@ async function runChecks() {
 			finally { api.state.world.gravity.copy(gravity); }
 		}
 		requireCondition(floorSpeeds[1] > floorSpeeds[0] + 0.1, "較高字形反彈必須提高真實桌面回彈速度");
-		const denseRestitution = 0.22 + 0.12 * 0.25 / 0.75, sparseRestitution = 0.22 + 0.12 * (0.75 - 0.5 * 64 / 255) / 0.75;
+		requireCondition(floorSpeeds.every((speed) => speed > 2), "高彈性薄片實際落地回彈速度必須明顯高於舊低彈性");
+		const denseRestitution = 0.72 + 0.2 * 0.25 / 0.75, sparseRestitution = 0.72 + 0.2 * (0.75 - 0.5 * 64 / 255) / 0.75;
 		const idealDifference = 2 * (sparseRestitution ** 2 - denseRestitution ** 2);
-		requireCondition(pairSpeeds[1] - pairSpeeds[0] > idealDifference * 0.5, "普通字形反彈仍须提高真實雙片分離速度，尺度依新材質係數差計算");
+		requireCondition(pairSpeeds[1] - pairSpeeds[0] > idealDifference * 0.5, "高彈性字形差異仍須提高真實雙片分離速度，尺度依材質乘積差計算");
 	}
+	async function lowSpeedRestitutionCheck() {
+		for (const speed of [0.1, 2]) {
+			await newGame();
+			const coin = owned(0)[0], body = place(coin), profile = api.glyphPhysicsProfile(coin.model);
+			body.velocity.y = -speed;
+			let captured = null;
+			body.addEventListener("collide", (event) => {
+				if (event.body === api.state.floor && !captured) captured = { /* contact：本步真正接觸方程；impact：求解前實際入射速度。 */ contact: event.contact, impact: Math.abs(event.contact.getImpactVelocityAlongNormal()) };
+			});
+			for (let tick = 0; tick < 30 && !captured; tick++) step(1);
+			requireCondition(captured && (captured.impact < 0.5) === (speed < 0.5), "低速耗散必須根據真正接觸相對速度區分");
+			near(captured.contact.restitution, speed < 0.5 ? 0.22 : profile.restitution, "求解前僅低速接觸降低反彈，高速保留字形彈性");
+			near(body.material.restitution, profile.restitution, "低速耗散不可永久修改字形材質");
+			if (speed < 0.5) {
+				settleGameBodies();
+				requireCondition(api.isGameCoinResting(coin), "低速耗散後仍須以原門檻及真接地證據判停");
+			}
+		}
+	}
+
 	function recordGroundSupport(coin) {
 		// 暫停自動睡眠，先讓真正接觸方程穩定；不由測試偽造支撐紀錄。
 		coin.body.allowSleep = false;
@@ -1102,11 +1215,11 @@ async function runChecks() {
 		place(natural, -3);
 		// 對局本身已啟用自動睡眠，直接驗證產品設定及真正入睡轉折，不再由 fixture 代為開啟。
 		requireCondition(api.state.world.allowSleep === true, "開始對局必須啟用其自然睡眠策略");
-		for (let tick = 0; tick < 1200 && natural.body.sleepState !== 2; tick++) {
+		for (let tick = 0; tick < 4200 && natural.body.sleepState !== 2; tick++) {
 			step(1);
 			api.isGameCoinResting(natural);
 		}
-		requireCondition(natural.body.sleepState === 2, "正常落地薄片必須能自然睡眠");
+		requireCondition(natural.body.sleepState === 2, `正常落地薄片必須能在35秒內自然睡眠：v=${natural.body.velocity.length()}、w=${natural.body.angularVelocity.length()}、y=${natural.body.position.y}`);
 		step(6);
 		requireCondition(api.isGameCoinResting(natural), "自然入睡的最後微小位移不能造成永久未停止");
 
@@ -1203,15 +1316,17 @@ async function runChecks() {
 	await check("真實接觸求解後助推、一次性與重開佇列清理", deferredContactCheck);
 	await check("真落地震波時序、每手一次與純視覺清理", groundImpactLifecycleCheck);
 	await check("震波三維範圍衰減、共享動能預算及己方免疫", groundImpactBudgetCheck);
+	await check("首次落地機率爆炸、大範圍有界擊飛與捕獲隔離", explosionBranchCheck);
 	await check("正交視角傾15度、無牆與無邊界合法投擲", infiniteBattlefieldCheck);
 	await check("安全出生保留能量、受阻拒絕不改原對局", spawnSafetyCheck);
 	await check("偏心握持及不同質量分布產生空中角運動", airborneSpinCheck);
 	await check("平板碰撞與視覺、原慣量及只保留角度控制", flatGeometryCheck);
 	await check("字形自動反彈實際影響桌面及雙片碰撞", restitutionCheck);
+	await check("真接觸相對速度耗散、高速強彈及材質不變", lowSpeedRestitutionCheck);
 	await check("睡眠接觸省略後仍停止、移至空中快取失效", sleepingSupportCheck);
 	await check("睡眠疊放支撐、捕獲下層後喚醒與失效", supportedStackRemovalCheck);
 	await check("新投擲清除前回合支撐紀錄並喚醒桌面枚", newThrowInvalidatesSupportCheck);
-	return { /* passed：實際通過的流程；failures：逐項失敗原因，禁止用跳過取代修正。 */ passed, failures };
+	return { /* passed：實際通過流程；failures：失敗原因；measurements：固定fixture真正物理回應，不能外推所有字形。 */ passed, failures, measurements };
 }
 
 // 必須以非零退出碼保留錯誤，不把測試寫完當成遊戲驗收成功。

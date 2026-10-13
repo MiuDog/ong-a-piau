@@ -98,12 +98,15 @@ flowchart TD
 	Throw --> Prepare[prepareGameThrow：安全出生預檢]
 	Prepare --> Shape[makeGameBody → collisionRectangles]
 	Shape --> Sim[simulating：真實物理步進]
+	Sim --> ContactSpeed[原solver.solve前 → updateGameRestitution：接觸相對速度耗散]
 	Sim --> Queue[collide：保存真接觸]
 	Queue --> Flush[postStep → flushGameContacts]
 	Flush --> Hit[handleGameContact：接觸鏈命中]
 	Hit --> Edge[applyGameEdgeAssist：有界一次助推]
 	Flush --> Shock[applyGroundImpact：首次落地共享範圍衝量]
-	Shock --> Ring[spawnGroundShockEffect：藍色擴散環]
+	Shock --> Chance{首次落地25%爆炸}
+	Chance -->|普通| Ring[spawnGroundShockEffect：藍色擴散環]
+	Chance -->|爆炸| Blast[2.5倍範圍與較強有界衝量 → 橘色環及火花]
 	Sim --> Rest[isGameCoinResting]
 	Rest --> Face[stableGameFace：與投出前朝上面比較]
 	Face --> Capture[finishGameTurn：相對翻面捕獲與特效]
@@ -140,8 +143,9 @@ flowchart TD
 | `throwGameCoin` | 保存本次攻擊者、拾起合法枚、喚醒其他枚、分配位能／平移／旋轉，開始真實模擬。 |
 | `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
 | `flushGameContacts` | 每步求解完成後清空接觸佇列；沿真實接觸傳遞六枚命中關係，再以目前姿態還原力臂、處理一次助推。 |
-| `applyGroundImpact` | 真實地面接觸在postStep觸發本手唯一震波；filter/map/reduce選三維範圍內枚、分配衰減預算並求最近筆畫，施加有界向外／向上衝量。 |
-| `spawnGroundShockEffect` | 建立0.6秒藍色擴散环，範圍與真實震波一致，無物理形體。 |
+| `applyGroundImpact` | 真實地面接觸在postStep觸發本手唯一震波，抽一次25%爆炸並記錄explosive；filter/map/reduce選三維範圍內枚、分配衰減預算並求最近筆畫，施加普通／爆炸的有界向外／向上衝量。 |
+| `updateGameRestitution` | 在原solver.solve之前按真接觸相對法向速度選低速耗散，保持高速碰撞高彈性與材質/profile；不改停止門檻或校準世界。 |
+| `spawnGroundShockEffect` | 建立普通0.6秒藍色環或爆炸0.9秒橘色環及火花，範圍與真實衝擊一致，無物理形體。 |
 | `prepareGameThrow` | 保持共同能量／速度預算，預檢八個入射方向的實際出生包圍盒；排除牆及既有堆疊，拒絕時不改回合或拿走枚。 |
 | `glyphPhysicsProfile` | 由文字攻防導出能量、高度、彈性與摩擦；玩家不能調整這些係數，材質互撞採乘積。 |
 | `beginGameDrag`、`updateGameDrag` | 底部單指手勢累積路徑與事件時間，以戰場高度正規化甩速；另更新瞄準與落點箭頭。 |
@@ -160,6 +164,8 @@ flowchart TD
 | `stableGameFace` | 僅有真支撐且停止的枚回傳朝上面±1；側立、空中、移動及手中為0，供投出前基準與結算比較。 |
 | `spawnCaptureEffect`、`animateCaptureEffects` | 合法捕獲才建立金色環與碎光；0.8秒淡出擴散，無剛體、不影響結果。 |
 | `groundImpactLifecycleCheck`、`groundImpactBudgetCheck`、`captureEffects`（測試） | 驗真正首次落地、postStep時序、重彈與下手隔離、三維範圍衰減及實際總動能；篩選金色捕獲特效避免混淆藍色震波。 |
+| `explosionBranchCheck`（測試） | 固定隨機輸入驗25%邊界、唯一抽選、普通與爆炸範圍／實際總動能、界外與己方捕獲隔離及特效清理。 |
+| `lowSpeedRestitutionCheck`、`settleGameBodies`（測試） | 真接觸驗低速耗散與高速高彈性，材質保持；有限真步進等待自然停妥，保留原停止與捕獲門檻。 |
 | `disposeCaptureEffect`、`clearCaptureEffects` | 移除及釋放特效幾何／材質；到期、重開與回設定清理。 |
 | `updateGameUI` | 更新安全名字、持有數、合法選幣按鈕、屬性、回合、勝利與紀錄；選幣回呼保留 id。 |
 | `animateGame` | 同步所有 3D 字形姿態，累積穩定時間，正常或超時呼叫結算。 |
