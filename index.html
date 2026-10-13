@@ -75,7 +75,7 @@
 			<section id="setup">
 				<div class="setup-bar">
 					<div><label for="mode">對戰模式</label><select id="mode"><option value="cpu">單人對戰電腦</option><option value="local">單機雙人輪流</option></select></div>
-					<div><label for="difficulty">電腦難度</label><select id="difficulty"><option value="easy">簡單</option><option value="normal" selected>普通</option><option value="hard">困難</option></select></div>
+					<div><p>重量、彈性與投擲能量由文字決定。</p></div>
 				</div>
 				<div class="player-grid">
 					<section class="panel player-0">
@@ -93,19 +93,18 @@
 						<div class="coin-inputs"><input id="p2-text-0" aria-label="玩家二第一枚" value="你" maxlength="64"><input id="p2-text-1" aria-label="玩家二第二枚" value="田" maxlength="64"><input id="p2-text-2" aria-label="玩家二第三枚" value="🛡️" maxlength="64"></div>
 					</section>
 				</div>
-				<div class="actions"><button id="start-game" class="primary" disabled>開始對戰</button><button id="open-lab">字形物理測試</button></div>
+				<div class="actions"><button id="start-game" class="primary" disabled>開始對戰</button><button id="open-lab" hidden>字形物理測試</button></div>
 				<p id="setup-status" role="status" aria-live="polite">正在載入 3D 與物理引擎…</p>
-				<details><summary>怎麼玩？</summary><p>雙方各三枚，輪流投一次。手上有幣就先用手上的，手上沒幣才拿起桌上自己的幣。點桌面瞄準，調整力道並投擲。被命中的對手薄片落地停止後反面朝上，就收回你的手上再使用；彈起但正面落地不算。自己的薄片不會被自己淘汰。取得全部六枚才獲勝。</p><p>筆畫密集偏防守，稀疏偏進攻；邊緣小面積命中有撬起加成。外觀保留原字形，側邊藍／橘色顯示目前主人。</p></details>
+				<details><summary>怎麼玩？</summary><p>雙方各三枚，輪流投一次。手上有幣就先用手上的，手上沒幣才拿起桌上自己的幣。從底部拖曳瞄準，選擇投擲仰角後放開投擲；其他物性由文字決定。被命中的對手薄片落地停止後反面朝上，就收回你的手上再使用；彈起但正面落地不算。自己的薄片不會被自己淘汰。取得全部六枚才獲勝。</p><p>筆畫密集偏防守，稀疏偏進攻；邊緣小面積命中有撬起加成。外觀保留原字形，側邊藍／橘色顯示目前主人。</p></details>
 			</section>
 			<section id="match" hidden>
 				<div class="scoreboard"><div id="score-0" class="score player-0"></div><div id="score-1" class="score player-1"></div></div>
 				<div class="match-layout">
-					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從底部往上拖曳，放開投擲"><div class="launch-zone">從底部往上拖曳，放開投擲</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">底部拖曳：箭頭指向預計落點，拖得越遠力道越大。也可點桌面瞄準再按投擲。正面保留原字，灰白色背面朝上才可被奪取。</p></div>
+					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從底部往上拖曳，放開投擲"><div class="launch-zone">從底部往上拖曳，放開投擲</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">底部拖曳：箭頭指向預計落點，只能調整投擲仰角。力度、彈性由文字決定；也可點桌面瞄準再按投擲。正面保留原字，灰白色背面朝上才可被奪取。</p></div>
 					<aside class="panel">
 						<h2 id="turn-label"></h2><p id="match-status" role="status" aria-live="polite"></p><div id="winner" hidden></div>
 						<div id="coin-list"></div><p id="selected-stats" class="legend"></p>
-						<label for="game-power">投擲力道 <output id="game-power-value">80%</output></label><input id="game-power" type="range" min="0.1" max="1" step="0.05" value="0.8">
-						<label for="game-restitution">彈性係數 <output id="game-restitution-value">0.65</output></label><input id="game-restitution" type="range" min="0" max="0.9" step="0.05" value="0.65">
+						<label for="game-angle">投擲仰角 <output id="game-angle-value">35°</output></label><input id="game-angle" type="range" min="15" max="65" step="1" value="35">
 						<div class="actions"><button id="throw-game" class="primary">投擲</button><button id="restart-game">再玩一場</button><button id="back-setup">結束並回設定</button></div>
 						<ol id="game-log" aria-label="回合紀錄"></ol>
 					</aside>
@@ -173,17 +172,16 @@
 			const game = {
 				/* active：對戰是否啟用；mode：cpu 或 local；current、thrower：當前玩家及本次攻擊者。
 				 * status：setup/ready/simulating/won；winner：未分勝負時為 null；coins：唯一六枚。
-				 * selectedId、thrownId：選中與本次投出枚；aim：桌面瞄準座標；power：共同力度。
+				 * selectedId、thrownId：選中與本次投出枚；aim：桌面瞄準座標；angleDegrees：唯一可調的投擲仰角。
 				 * turn、elapsed、quiet：回合與靜止時間；epoch：隔離舊非同步與計時器。
-				 * cpuTimer：目前 AI 計時器；players：名稱與顏色；difficulty：AI 瞄準誤差。
+				 * cpuTimer：目前 AI 計時器；players：名稱與顏色。
 				 * walls：有限桌面的物理邊界；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。
 				 * contacts：本步真實接觸及局部力臂，求解結束後才施加遊戲助推。
-				 * restitution、coinMaterial、floorMaterial、contactMaterials：獨立遊戲碰撞彈性。
+				 * floorMaterial：遊戲地面材質，字形各自帶有由文字決定的碰撞係數。
 				 * drag：目前手勢及預測落點，取消或換局即清除。 */
 				active: false, mode: "cpu", current: 0, thrower: 0, status: "setup", winner: null, coins: [],
-				selectedId: null, thrownId: null, aim: null, power: 0.8, turn: 1, elapsed: 0, quiet: 0,
-				epoch: 0, cpuTimer: null, players: [], difficulty: "normal", walls: [], aimMesh: null, log: [], contacts: [],
-				restitution: 0.65, coinMaterial: null, floorMaterial: null, contactMaterials: [], drag: null
+				selectedId: null, thrownId: null, aim: null, angleDegrees: 35, turn: 1, elapsed: 0, quiet: 0,
+				epoch: 0, cpuTimer: null, players: [], walls: [], aimMesh: null, log: [], contacts: [], floorMaterial: null, drag: null
 			};
 			boot();
 
@@ -216,10 +214,7 @@
 				floor.quaternion.setFromEuler(-Math.PI / 2, 0, 0);
 				state.world.addBody(floor);
 				state.floor = floor;
-				game.coinMaterial = new CANNON.Material("game-coin");
-				game.floorMaterial = new CANNON.Material("game-floor");
-				game.contactMaterials = [new CANNON.ContactMaterial(game.coinMaterial, game.coinMaterial, { /* friction、restitution：字形互撞時共用摩擦及彈性。 */ friction: 0.3, restitution: game.restitution }), new CANNON.ContactMaterial(game.coinMaterial, game.floorMaterial, { /* friction、restitution：桌面與牆的遊戲材質，不影響校準原型。 */ friction: 0.3, restitution: game.restitution })];
-				for (const material of game.contactMaterials) state.world.addContactMaterial(material);
+				game.floorMaterial = new CANNON.Material({ /* friction、restitution：乘積中保持字形自身係數，不套用到校準桌面。 */ friction: 1, restitution: 1 });
 
 				// 建立固定視角，讓正反面及離桌高度容易觀察。
 				state.scene = new THREE.Scene();
@@ -481,7 +476,6 @@
 				geometry.translate(0, 0, -config.thickness / 2);
 				geometry.rotateX(-Math.PI / 2);
 				geometry.rotateY(model.angle);
-				if (model.curve) geometry = curveGlyphGeometry(geometry, model);
 				geometry.clearGroups();
 				const normals = geometry.getAttribute("normal"), vertexCount = geometry.getAttribute("position").count;
 				let groupStart = 0, groupMaterial = -1;
@@ -848,11 +842,9 @@
 				getGameElement("game-board").addEventListener("pointermove", updateGameDrag);
 				getGameElement("game-board").addEventListener("pointerup", endGameDrag);
 				getGameElement("game-board").addEventListener("pointercancel", cancelGameDrag);
-				getGameElement("game-restitution").addEventListener("input", () => updateGameRestitution(getGameElement("game-restitution").value));
-				getGameElement("mode").addEventListener("change", () => { getGameElement("difficulty").disabled = getGameElement("mode").value === "local"; });
-				getGameElement("game-power").addEventListener("input", () => {
-					game.power = Number(getGameElement("game-power").value);
-					getGameElement("game-power-value").textContent = `${Math.round(game.power * 100)}%`;
+				getGameElement("game-angle").addEventListener("input", () => {
+					game.angleDegrees = Math.max(15, Math.min(65, Number(getGameElement("game-angle").value) || 35));
+					getGameElement("game-angle-value").textContent = `${game.angleDegrees}°`;
 				});
 				getGameElement("open-lab").addEventListener("click", () => {
 					getGameElement("setup").hidden = true;
@@ -907,7 +899,7 @@
 						const key = `${descriptor.text}|${family}`;
 						const rawModel = cache.get(key) || sampleGlyph(descriptor.text, family);
 						cache.set(key, rawModel);
-						const model = curveGameModel(balanceGameModel(rawModel));
+						const model = balanceGameModel(rawModel);
 						coins.push({
 							/* id、owner、text、font：承接已驗證的永久身分與外觀設定。
 							 * model：捕獲後仍共用原物性；body、mesh：null 表示在手上。
@@ -924,7 +916,6 @@
 					state.running = false;
 					game.coins = coins;
 					game.mode = getGameElement("mode").value;
-					game.difficulty = getGameElement("difficulty").value;
 					game.players = [0, 1].map((owner) => {
 						let name = getGameElement(`p${owner + 1}-name`).value.trim() || `玩家${owner + 1}`;
 						if (owner === 1 && game.mode === "cpu" && name === "玩家二") name = "電腦";
@@ -940,7 +931,7 @@
 					game.turn = 1;
 					game.quiet = game.elapsed = 0;
 					game.log = [];
-					game.power = Number(getGameElement("game-power").value);
+					game.angleDegrees = Number(getGameElement("game-angle").value) || 35;
 					game.aim = new THREE.Vector3(-2.7, 0, 1.4);
 					setupGameBoard();
 					getGameElement("setup").hidden = getGameElement("lab").hidden = true;
@@ -965,11 +956,10 @@
 			function setupGameBoard() {
 				cancelGameDrag();
 				state.floor.material = game.floorMaterial;
-				updateGameRestitution(getGameElement("game-restitution").value);
 				for (const wall of game.walls) state.world.removeBody(wall);
 				game.walls = [];
 				// 固定高牆防止薄片飛出可見桌面，牆本身不造成淘汰。
-				const positions = [[-6.1, 10, 0, 0.5, 10.1, 4.6], [6.1, 10, 0, 0.5, 10.1, 4.6], [0, 10, -4.6, 6.6, 10.1, 0.5], [0, 10, 4.6, 6.6, 10.1, 0.5]];
+				const positions = [[-6.1, 50, 0, 0.5, 50.1, 4.6], [6.1, 50, 0, 0.5, 50.1, 4.6], [0, 50, -4.6, 6.6, 50.1, 0.5], [0, 50, 4.6, 6.6, 50.1, 0.5]];
 				for (const values of positions) {
 					const wall = new CANNON.Body({ /* mass：固定邊界；shape：以半長度指定牆。 */ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(values[3], values[4], values[5])) });
 					wall.position.set(values[0], values[1], values[2]);
@@ -1032,18 +1022,16 @@
 			}
 
 			function makeGameBody(model, position) {
+				const profile = glyphPhysicsProfile(model);
+				const material = new CANNON.Material({ /* friction、restitution：由文字覆蓋率決定，互撞時使用兩枚係數乘積。 */ friction: profile.friction, restitution: profile.restitution });
 				const body = new CANNON.Body({
 					/* mass：遊戲像素質量；material：遊戲彈性材質；linearDamping：共同線耗散；angularDamping：防守耗散。
 					 * allowSleep、sleepSpeedLimit、sleepTimeLimit：每枚獨立靜止控制。 */
-					mass: model.mass, material: game.coinMaterial, linearDamping: 0.1, angularDamping: balanceProfile(model).angularDamping, allowSleep: true, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.6
+					mass: model.mass, material, linearDamping: 0.1, angularDamping: profile.angularDamping, allowSleep: true, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.6
 				});
 				const orientation = new CANNON.Quaternion();
 				orientation.setFromEuler(0, model.angle, 0);
 				for (const rectangle of collisionRectangles(model)) {
-					if (model.curve) {
-						addCurvedCollision(body, rectangle, model);
-						continue;
-					}
 					const point = { /* x、z：相鄰像素合併區的幾何中心，不改原像素質量積分。 */ x: (rectangle.col + rectangle.width / 2) * model.step - config.size / 2, z: (rectangle.row + rectangle.height / 2) * model.step - config.size / 2 };
 					body.addShape(new CANNON.Box(new CANNON.Vec3(rectangle.width * model.step / 2, config.thickness / 2, rectangle.height * model.step / 2)), localPoint(point, model), orientation);
 				}
@@ -1087,102 +1075,6 @@
 				};
 			}
 
-			function curveGameModel(raw) {
-				// 僅改遊戲薄片：字框尺度限制曲率，稀疏字不可形成過度尖銳的小碗。
-				let radiusSquared = (config.size / 2) ** 2;
-				for (const cell of raw.cells) {
-					for (const dx of [-raw.step / 2, raw.step / 2]) {
-						for (const dz of [-raw.step / 2, raw.step / 2]) {
-							const point = localPoint({ x: cell.x + dx, z: cell.z + dz }, raw);
-							radiusSquared = Math.max(radiusSquared, point.x ** 2 + point.z ** 2);
-						}
-					}
-				}
-				const height = 0.18;
-				const mean = raw.cells.reduce((sum, cell) => {
-					const point = localPoint(cell, raw);
-					return sum + cell.mass * height * (point.x ** 2 + point.z ** 2) / radiusSquared;
-				}, 0) / raw.mass;
-				let xx = 0, zz = 0, xh = 0, zh = 0;
-				for (const cell of raw.cells) {
-					const point = localPoint(cell, raw), lift = height * (point.x ** 2 + point.z ** 2) / radiusSquared - mean;
-					xx += cell.mass * point.x ** 2;
-					zz += cell.mass * point.z ** 2;
-					xh += cell.mass * point.x * lift;
-					zh += cell.mass * point.z * lift;
-				}
-				const model = {
-					/* ...raw：原遊戲材質，不修改快取；curve：翹曲高度與去均值／線性項，維持質點重心及主軸。 */
-					...raw, curve: { /* height、radiusSquared：有界曲率；mean、tiltX、tiltZ：質點重心與交叉慣量修正。 */ height, radiusSquared, mean, tiltX: xx > 1e-12 ? xh / xx : 0, tiltZ: zz > 1e-12 ? zh / zz : 0 }
-				};
-				model.cells = raw.cells.map((cell) => {
-					const point = localPoint(cell, raw);
-					return { /* ...cell：原像素位置、質量及遮罩；lift：此質點的實際翹曲高度。 */ ...cell, lift: glyphSurfaceHeight(model, point.x, point.z) };
-				});
-				const verticalMoment = model.cells.reduce((sum, cell) => sum + cell.mass * cell.lift ** 2, 0);
-				model.inertia = new CANNON.Vec3(raw.inertia.x + verticalMoment, raw.inertia.y, raw.inertia.z + verticalMoment);
-				return model;
-			}
-
-			function glyphSurfaceHeight(model, x, z) {
-				if (!model.curve) return 0;
-
-				const curve = model.curve;
-				return curve.height * (x * x + z * z) / curve.radiusSquared - curve.mean - curve.tiltX * x - curve.tiltZ * z;
-			}
-
-			function addCurvedCollision(body, rectangle, model) {
-				// 在原佔據矩形內切分小凸薄楔，不填孔洞；四角近似連續二次曲面。
-				for (let row = 0; row < rectangle.height; row += 3) {
-					for (let col = 0; col < rectangle.width; col += 3) {
-						const width = Math.min(3, rectangle.width - col), depth = Math.min(3, rectangle.height - row);
-						const x = (rectangle.col + col) * model.step - config.size / 2, z = (rectangle.row + row) * model.step - config.size / 2;
-						const corners = [[x, z], [x + width * model.step, z], [x + width * model.step, z + depth * model.step], [x, z + depth * model.step]];
-						const vertices = [];
-						for (const side of [-1, 1]) {
-							for (const corner of corners) {
-								const point = localPoint({ x: corner[0], z: corner[1] }, model);
-								point.y = glyphSurfaceHeight(model, point.x, point.z) + side * config.thickness / 2;
-								vertices.push(point);
-							}
-						}
-						const center = vertices.reduce((sum, point) => { sum.vadd(point, sum); return sum; }, new CANNON.Vec3());
-						center.scale(1 / vertices.length, center);
-						for (const point of vertices) point.vsub(center, point);
-						const shape = new CANNON.ConvexPolyhedron({ /* vertices：以片段中心為原點的翹曲上下表面；faces：向外繞序的六個凸面。 */ vertices, faces: [[0, 1, 2, 3], [4, 7, 6, 5], [0, 4, 5, 1], [1, 5, 6, 2], [2, 6, 7, 3], [3, 7, 4, 0]] });
-						body.addShape(shape, center);
-					}
-				}
-			}
-
-			function curveGlyphGeometry(source, model) {
-				const positions = source.getAttribute("position"), sourceUv = source.getAttribute("uv");
-				const vertices = [], coordinates = [];
-				const vertex = (index) => ({ /* point、uv：原輪廓三角形座標與字形紋理，細分後仍保留孔洞。 */ point: new THREE.Vector3(positions.getX(index), positions.getY(index), positions.getZ(index)), uv: new THREE.Vector2(sourceUv.getX(index), sourceUv.getY(index)) });
-				const split = (a, b, c, depth) => {
-					const lengths = [a.point.distanceToSquared(b.point), b.point.distanceToSquared(c.point), c.point.distanceToSquared(a.point)];
-					const longest = lengths.indexOf(Math.max(...lengths));
-					if (lengths[longest] > 0.04 && depth < 10) {
-						const points = [a, b, c], left = points[longest], right = points[(longest + 1) % 3], third = points[(longest + 2) % 3];
-						const middle = { /* point、uv：線性插值頂點，最後才套曲面高度。 */ point: left.point.clone().add(right.point).multiplyScalar(0.5), uv: left.uv.clone().add(right.uv).multiplyScalar(0.5) };
-						split(left, middle, third, depth + 1);
-						split(middle, right, third, depth + 1);
-						return;
-					}
-					for (const item of [a, b, c]) {
-						vertices.push(item.point.x, item.point.y + glyphSurfaceHeight(model, item.point.x, item.point.z), item.point.z);
-						coordinates.push(item.uv.x, item.uv.y);
-					}
-				};
-				for (let i = 0; i < positions.count; i += 3) split(vertex(i), vertex(i + 1), vertex(i + 2), 0);
-				const geometry = new THREE.BufferGeometry();
-				geometry.setAttribute("position", new THREE.Float32BufferAttribute(vertices, 3));
-				geometry.setAttribute("uv", new THREE.Float32BufferAttribute(coordinates, 2));
-				geometry.computeVertexNormals();
-				source.dispose();
-				return geometry;
-			}
-
 			function collisionRectangles(model) {
 				// 合併完全相鄰的取樣格，碰撞佔據區不變；避免六枚互撞需逐對比數百方盒。
 				const occupied = new Set(model.cells.map((cell) => `${cell.row},${cell.col}`));
@@ -1216,7 +1108,7 @@
 				if (!coin) return false;
 				const prepared = prepareGameThrow(coin);
 				if (!prepared) {
-					updateGameUI("這個落點周圍有堆疊薄片，請換個瞄準點或提高力道再投擲。");
+					updateGameUI("這個落點周圍有堆疊薄片，請換個瞄準點或投擲仰角再投擲。");
 					return false;
 				}
 
@@ -1240,19 +1132,28 @@
 				return true;
 			}
 
+			function glyphPhysicsProfile(model) {
+				const balance = balanceProfile(model);
+				return {
+					/* ...balance：文字攻防及阻尼；energy、height：字形決定的高拋預算。
+					 * restitution、friction：稀疏字較彈、密字較抓地；使用者不可調整。 */
+					...balance, energy: 1.05 * 0.3 * config.gravity + 4 * balance.offense, height: 0.9 + 0.2 * balance.offense,
+					restitution: 0.45 + 0.25 * balance.offense / 0.75, friction: 0.3 + 0.2 * balance.defense
+				};
+			}
+
 			function prepareGameThrow(coin) {
 				// 在拿起桌面枚、改回合前預檢，拒絕時保留整場狀態。
 				const model = coin.model;
-				const power = Math.max(0, Math.min(1, Number(game.power) || 0));
-				const energy = 0.9 * 0.3 * config.gravity + 4 * balanceProfile(model).offense * power * power;
-				const height = 0.9;
+				const profile = glyphPhysicsProfile(model), energy = profile.energy, height = profile.height;
 				const remaining = Math.max(0, energy - model.mass * config.gravity * height);
 				const linearEnergy = Math.min(remaining * 0.75, 18 * model.mass, 0.72 / model.mass);
 				const spinEnergy = remaining - linearEnergy;
 				const velocity = Math.sqrt(2 * linearEnergy / model.mass);
-				const vertical = velocity * 0.22;
-				const horizontal = velocity * Math.sqrt(1 - 0.22 ** 2);
-				const flightTime = (Math.sqrt(vertical * vertical + 2 * config.gravity * height) - vertical) / config.gravity;
+				const angleDegrees = Math.max(15, Math.min(65, Number(game.angleDegrees) || 35));
+				const pitch = angleDegrees * Math.PI / 180;
+				const vertical = velocity * Math.sin(pitch), horizontal = velocity * Math.cos(pitch);
+				const flightTime = (Math.sqrt(vertical * vertical + 2 * config.gravity * height) + vertical) / config.gravity;
 				const direction = game.current === 0 ? 1 : -1;
 				const initialAngle = Math.atan2(-direction * 0.8, direction * 0.6);
 				for (let attempt = 0; attempt < 8; attempt++) {
@@ -1272,7 +1173,7 @@
 					});
 					if (blocked) continue;
 
-					body.velocity.set(vx, -vertical, vz);
+					body.velocity.set(vx, vertical, vz);
 					// 下緣施力偏離重心：力臂叉乘發射方向，經主慣量轉成空中偏轉軸。
 					const grip = localPoint({ /* x、z：原始字框下緣握持點，重心不對稱會改變力臂。 */ x: 0, z: config.size / 2 }, model);
 					const torque = grip.cross(body.quaternion.conjugate().vmult(body.velocity));
@@ -1336,7 +1237,8 @@
 				const attacker = game.coins.find((item) => item.id === game.thrownId);
 				const extraEnergy = 1.2 * balanceProfile(attacker?.model).offense / 0.75;
 				const cap = (-b + Math.sqrt(b * b + 2 * k * extraEnergy)) / k;
-				const impulse = Math.min(0.8, cap, 0.8 * body.mass * impact * (profile.gain - 1));
+				const previousImpulse = Math.min(0.8, cap, 0.8 * body.mass * impact * (profile.gain - 1));
+				const impulse = 6 * previousImpulse;
 				body.wakeUp();
 				body.applyImpulse(new CANNON.Vec3(0, impulse, 0), offset);
 				return impulse > 0;
@@ -1434,10 +1336,10 @@
 
 				const opponents = game.coins.filter((item) => item.owner !== game.current && item.body);
 				const target = [...opponents].sort((a, b) => a.model.stability - b.model.stability)[0];
-				const power = game.difficulty === "easy" ? 0.65 : game.difficulty === "hard" ? 0.95 : 0.85;
+				const angleDegrees = 35;
 				const attackScore = (candidate) => {
 					const mass = candidate.model.mass;
-					const energy = 0.9 * 0.3 * config.gravity + 4 * balanceProfile(candidate.model).offense * power * power;
+					const energy = glyphPhysicsProfile(candidate.model).energy;
 					if (!target) return energy;
 
 					// 使用一維質量匹配的能量傳遞估計選枚，不預測或改寫翻面結果。
@@ -1457,12 +1359,12 @@
 					const point = target.body.pointToWorldFrame(localPoint(cell, target.model));
 					aim.set(point.x, 0, point.z);
 				}
-				const error = game.difficulty === "hard" ? 0.08 : game.difficulty === "easy" ? 0.65 : 0.3;
+				const error = 0.3;
 				aim.x += (Math.random() - 0.5) * 2 * error;
 				aim.z += (Math.random() - 0.5) * 2 * error;
 				aim.x = Math.max(-5.2, Math.min(5.2, aim.x));
 				aim.z = Math.max(-3.7, Math.min(3.7, aim.z));
-				return { /* coinId：合法可用枚；aim：有誤差的桌面目標；power：實際投擲力度，無勝負特權。 */ coinId: coin.id, aim, power };
+				return { /* coinId：合法可用枚；aim：有誤差的桌面目標；angleDegrees：同真人的仰角範圍，無能量特權。 */ coinId: coin.id, aim, angleDegrees };
 			}
 
 			function scheduleCpuTurn() {
@@ -1480,7 +1382,7 @@
 
 					game.selectedId = plan.coinId;
 					game.aim.copy(plan.aim);
-					game.power = plan.power;
+					game.angleDegrees = plan.angleDegrees;
 					if (throwGameCoin()) return;
 
 					// 堆疊阻擋時嘗試安全桌面落點，仍由同一預檢及發射流程處理。
@@ -1488,16 +1390,8 @@
 						game.aim.set(point[0], 0, point[1]);
 						if (throwGameCoin()) return;
 					}
-					game.power = 1;
 					scheduleCpuTurn();
 				}, 900);
-			}
-
-			function updateGameRestitution(value) {
-				game.restitution = Math.max(0, Math.min(0.9, Number(value) || 0));
-				for (const material of game.contactMaterials) material.restitution = game.restitution;
-				getGameElement("game-restitution").value = game.restitution;
-				getGameElement("game-restitution-value").textContent = game.restitution.toFixed(2);
 			}
 
 			function beginGameDrag(event) {
@@ -1520,9 +1414,6 @@
 				if (distance < 12) { getGameElement("throw-preview").setAttribute("hidden", ""); return; }
 
 				pickGameAim(event);
-				game.power = Math.max(0.1, Math.min(1, distance / (bounds.height * 0.65)));
-				getGameElement("game-power").value = game.power;
-				getGameElement("game-power-value").textContent = `${Math.round(game.power * 100)}%`;
 				game.drag.landing.copy(game.aim);
 				const projected = game.drag.landing.clone().project(state.camera);
 				const arrow = getGameElement("throw-arrow"), preview = getGameElement("throw-preview");
@@ -1606,10 +1497,9 @@
 				if (message) getGameElement("match-status").textContent = message;
 				const cpu = game.mode === "cpu" && game.current === 1;
 				getGameElement("throw-game").disabled = game.status !== "ready" || cpu;
-				getGameElement("game-power").disabled = game.status !== "ready" || cpu;
-				getGameElement("game-restitution").disabled = game.status !== "ready" || cpu;
-				getGameElement("game-power").value = game.power;
-				getGameElement("game-power-value").textContent = `${Math.round(game.power * 100)}%`;
+				getGameElement("game-angle").disabled = game.status !== "ready" || cpu;
+				getGameElement("game-angle").value = game.angleDegrees;
+				getGameElement("game-angle-value").textContent = `${game.angleDegrees}°`;
 				const list = getGameElement("coin-list");
 				list.replaceChildren();
 				for (const coin of availableGameCoins(game.current)) {
@@ -1628,7 +1518,7 @@
 					const profile = balanceProfile(selected.model);
 					const point = localPoint(selected.model.cells[farthestCell(selected.model)], selected.model);
 					const agility = Math.hypot(point.z / selected.model.inertia.x, point.x / selected.model.inertia.z);
-					getGameElement("selected-stats").textContent = `重量 ${selected.model.mass.toFixed(2)} · 穩定參考 ${selected.model.stability.toFixed(2)} · 翻轉靈敏度 ${agility.toFixed(1)}。進攻 ${(profile.offense * 100).toFixed(0)}%／防守 ${(profile.defense * 100).toFixed(0)}%`;
+					getGameElement("selected-stats").textContent = `重量 ${selected.model.mass.toFixed(2)} · 穩定 ${selected.model.stability.toFixed(2)} · 翻轉靈敏度 ${agility.toFixed(1)}。進攻 ${(profile.offense * 100).toFixed(0)}%／防守 ${(profile.defense * 100).toFixed(0)}%`;
 				}
 				const winner = getGameElement("winner");
 				winner.hidden = game.status !== "won";
@@ -1656,7 +1546,7 @@
 				const board = game.coins.filter((coin) => coin.body);
 				game.quiet = board.every(isGameCoinResting) ? game.quiet + delta : 0;
 				if (game.elapsed > 0.45 && game.quiet > 0.5) finishGameTurn();
-				else if (game.elapsed > 10) finishGameTurn(true);
+				else if (game.elapsed > 35) finishGameTurn(true);
 			}
 		</script>
 	</body>

@@ -90,8 +90,7 @@ flowchart TD
 	Setup[startGame] --> Validate[六枚設定與字素驗證]
 	Validate --> Font[字體載入／後備字形]
 	Font --> Material[balanceGameModel：字形材質]
-	Material --> Curve[curveGameModel：翹曲與慣量]
-	Curve --> Epoch{仍是同一世代}
+	Material --> Epoch{仍是同一世代}
 	Epoch -->|是| Ready[ready：選幣與瞄準]
 	Epoch -->|否| Ignore[丟棄過期結果]
 	Ready --> Available[availableGameCoins：手上優先]
@@ -111,21 +110,21 @@ flowchart TD
 	Next --> CPU[scheduleCpuTurn → planCpuTurn]
 	CPU --> Throw
 	Next --> Ready
-	Sim -->|10秒未定| Capture
+	Sim -->|35秒未定| Capture
 ```
 
 每次捕獲先快照符合條件的所有枚，再轉移到攻方手上，避免先移除下層影響同時結算。移除、拾起或捕獲會喚醒其餘枚並清除支撐快照。只按手上＋桌面的主人數判6：0。
 
 正式對戰啟用自動休眠；物理測試保留不自動休眠的校準模式。每枚 sleep 回呼從真實接觸取得支撐路徑；當引擎省略休眠接觸時，只接受仍存在、位置與姿態未變且速度低的證據。疊放可經靜止薄片傳到地面，純空中環不可作支撐。新投擲與捕獲清除舊快照並喚醒，避免浮空殘留。
 
-投擲以共同能量預算分配位能、平移與旋轉，電腦和真人同路徑。電腦只選合法枚、目標與力度，難度改變瞄準誤差。它不改寫姿態或所有權。回設定與重開使用 `epoch` 及 timer 清理隔離舊動作。
+投擲以字形能量預算分配位能、平移與旋轉，電腦和真人同路徑。電腦只選合法枚、目標與仰角，不能另加力度或修改材質。它不改寫姿態或所有權。回設定與重開使用 `epoch` 及 timer 清理隔離舊動作。
 
 ## 遊戲函式責任
 
 | 函式 | 責任與回呼 |
 | --- | --- |
 | `getGameElement` | 以固定 ID 存取 DOM，使用者字形與名字只透過 textContent 顯示。 |
-| `bindGameControls` | 綁定開始、重開、投擲、回設定、模式、力度、物理測試、桌面及鍵盤回呼。 |
+| `bindGameControls` | 綁定開始、重開、投擲、回設定、仰角、桌面及鍵盤回呼；開發校準入口不提供給玩家。 |
 | `startGame` | 驗證六枚、建立輸入快照、字體／字形載入與 epoch 檢查、清理舊場景、建立對局；player map 回呼只建立安全名稱與色彩。 |
 | `setupGameBoard` | 建立固定邊界與非物理瞄準記號，重開時移除舊牆。 |
 | `clearGameBodies`、`removeGameBody` | 移除對局或單枚的剛體、幾何、材質、紋理與支撐紀錄。 |
@@ -139,11 +138,8 @@ flowchart TD
 | `handleGameContact` | find 物件身分，沿實際接觸傳遞命中，排除自己並限制每枚的助推次數。 |
 | `flushGameContacts` | 每步求解完成後清空接觸佇列；沿真實接觸傳遞六枚命中關係，再以目前姿態還原力臂、處理一次助推。 |
 | `prepareGameThrow` | 保持共同能量／速度預算，預檢八個入射方向的實際出生包圍盒；排除牆及既有堆疊，拒絕時不改回合或拿走枚。 |
-| `curveGameModel`、`glyphSurfaceHeight` | 遊戲材質之後加入有界淺碗曲率，去質量均值及線性項，保留質點重心／主軸，加入高度分布的慣量；不修改原模型。 |
-| `addCurvedCollision` | 在原佔據矩形內分成最多3×3格的凸薄楔，角點遵循共同高度場，保留孔洞與厚度。 |
-| `curveGlyphGeometry`、內部 `vertex`／`split` | 保留原字形紋理，最長邊遞迴細分至0.2或深度上限，再套共同高度場、重算法線；材質群組覆蓋新頂點。 |
-| `updateGameRestitution` | 更新獨立字形／桌面接觸材質的彈性與滑桿，不改校準接觸材質。 |
-| `beginGameDrag`、`updateGameDrag` | 限真人準備回合的底部單指手勢；記錄起点、由距離設定力度、投影落點及 SVG 箭頭；非底部仍可點選瞄準。 |
+| `glyphPhysicsProfile` | 由文字攻防導出能量、高度、彈性與摩擦；玩家不能調整這些係數，材質互撞採乘積。 |
+| `beginGameDrag`、`updateGameDrag` | 限真人準備回合的底部單指手勢；只改瞄準位置，投影落點及 SVG 箭頭；不由拖曳距離改力度。 |
 | `endGameDrag`、`cancelGameDrag` | 有效上拖放開才投擲；清除指標捕獲、手勢與箭頭，短拖／取消不出手。 |
 | `applyGameEdgeAssist` | 在真实接觸力臂施加有動能增量上限的補充衝量，不指定結果。 |
 | `isGameCoinResting` | 分別檢查速度，BFS 真實支撐路徑，或驗證休眠快照；map 回呼記錄姿態證據。 |
@@ -214,8 +210,8 @@ flowchart TD
 | `cpuAndRestartCheck`、`finishWithQueuedTimers`、`cpuTimerCheck` | AI 計畫、真正排程出手及過期世代隔離。 |
 | `assertPartition`、`assertBodyMask`、`mergedGeometryCheck` | 以獨立遮罩逐格驗合併區與實際方盒，不填洞、不遺漏、不重疊。 |
 | `gameEnergyCheck` | 真正出手的高度、平移與旋轉共用預算與速度／衝量上限。 |
-| `airborneSpinCheck`、`restitutionCheck` | 驗偏心握持力臂與主慣量的空中反應，以及滑桿對真實地面及雙片碰撞的反彈效果。 |
-| `curvedGeometryCheck`、`curvedPryCheck` | 驗翹曲質點重心、主慣量、碰撞與視覺共同高度場及完整材質群組；停用額外助推比較相同外緣真撞擊的撬動反應。 |
+| `airborneSpinCheck`、`restitutionCheck` | 驗偏心握持力臂與主慣量的空中反應，以及字形導出材質對真實地面及雙片碰撞的反彈效果。 |
+| `flatGeometryCheck` | 驗平面擠出外觀、平板碰撞、孔洞與原質點慣量，完整材質群組不可漏画。 |
 | `shapeWorldVertices` | 讀取方盒／凸薄片的真角點並套用片段偏移及旋轉，供遮罩、厚度與曲面回歸使用。 |
 | `pointerUiCheck` | 以真實滑鼠拖曳驗箭頭、預測落點、短拖取消、放開投擲與電腦回合鎖定。 |
 | `recordGroundSupport`、`sleepingSupportCheck` | 以真正桌面接觸和產品自然休眠測試紀錄與空中失效。 |
