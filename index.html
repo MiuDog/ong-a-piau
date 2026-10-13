@@ -58,6 +58,9 @@
 					<label for="impulse">撬起衝量 <output id="impulse-value">0.60</output> N·s</label>
 					<input id="impulse" type="range" min="0.05" max="2" step="0.05" value="0.6">
 					<div class="actions"><button id="lift" disabled>撬起測試</button><button id="drop" disabled>落下撞擊</button></div>
+					<label for="throw-power">進攻投擲力道 <output id="throw-value">70%</output></label>
+					<input id="throw-power" type="range" min="0" max="1" step="0.05" value="0.7">
+					<div class="actions"><button id="launch" disabled>投擲此字形</button></div>
 				</section>
 				<section class="panel" aria-label="物理測試結果">
 					<div class="stats">
@@ -66,9 +69,10 @@
 						<div class="stat">翻轉靈敏度<strong id="agility">—</strong><small>rad/s 每 N·s · 在所選位置向上施力，預期產生的初始角速度。</small></div>
 					</div>
 					<div id="scene" aria-label="三維字形物理場景"></div>
+					<p id="balance">正在計算攻守配置…</p>
 					<p id="status" role="status" aria-live="polite">正在載入字體與物理引擎…</p>
 					<p class="legend">正面保留文字／emoji 色彩，背面灰白。落下撞擊使用同一顆測試球，從紅點正上方落下。數值使用模擬尺寸與密度。</p>
-					<details><summary>這一步在測試什麼？</summary><p>先驗證字形、質量、支撐與槓桿如何影響翻面。不同筆畫會固定為同一剛體；空白處没有碰撞形狀。字體不支援某字或 emoji 時使用裝置替代字形，畫面與物理皆取樣同一結果。此階段尚未加入三幣開局、回合、奪幣及電腦玩家。</p></details>
+					<details><summary>這一步在測試什麼？</summary><p>先驗證字形、質量、支撐與槓桿如何影響翻面。筆畫密集的字有較強防守耗散，但進攻能量預算較少；空投高度也從預算扣除。落下測試球只用於校準，邊緣撞擊有一次受限的撬起加成。彈起不等於擊殺，停止並接觸桌面後背面朝上才算。此階段尚未加入三幣開局、回合、奪幣及電腦玩家。</p></details>
 				</section>
 			</div>
 		</main>
@@ -85,13 +89,15 @@
 				 * world：物理世界；scene、camera、renderer：三維呈現；mesh：字形格實例。
 				 * marker：隨字形移動的重心標記；ball、ballMesh：可移除的落下撞擊測試球。
 				 * running、elapsed、quiet：結算時序；lastTime：動畫時間戳；busy：字體載入鎖。
-				 * generation：避免過期的非同步字體載入覆蓋新字形；floor：靜止及桌面接觸判定依據。 */
+				 * generation：避免過期的非同步字體載入覆蓋新字形；floor：靜止及桌面接觸判定依據。
+				 * assistUsed：一次撞擊不可由多個接觸格重複放大；lastAssist：已施加的加成與能量紀錄。
+				 * lastLaunch：攻方實際投擲預算，讓 UI 與測試可核對真正施加的能量。 */
 				model: null, selected: 0, target: null, world: null, scene: null, camera: null, renderer: null,
 				mesh: null, marker: null, ball: null, ballMesh: null, running: false, elapsed: 0, quiet: 0,
-				lastTime: 0, busy: false, generation: 0, floor: null
+				lastTime: 0, busy: false, generation: 0, floor: null, assistUsed: false, lastAssist: null, lastLaunch: null
 			};
 			// 動態映射契約：鍵為畫面元素 ID，值為對應 DOM 元素，集中管理設定與結果的存取。
-			const elements = Object.fromEntries(["text", "font", "generate", "reset", "glyph", "impulse", "impulse-value", "lift", "drop", "mass", "stability", "agility", "scene", "status"].map((id) => [id, document.getElementById(id)]));
+			const elements = Object.fromEntries(["text", "font", "generate", "reset", "glyph", "impulse", "impulse-value", "lift", "drop", "launch", "throw-power", "throw-value", "balance", "mass", "stability", "agility", "scene", "status"].map((id) => [id, document.getElementById(id)]));
 			const cache = new Map();
 			boot();
 
@@ -143,8 +149,10 @@
 				elements.reset.addEventListener("click", reset);
 				elements.lift.addEventListener("click", lift);
 				elements.drop.addEventListener("click", drop);
+				elements.launch.addEventListener("click", launch);
 				elements.glyph.addEventListener("pointerdown", selectPoint);
 				elements.impulse.addEventListener("input", () => { elements["impulse-value"].textContent = Number(elements.impulse.value).toFixed(2); });
+				elements["throw-power"].addEventListener("input", () => { elements["throw-value"].textContent = `${Math.round(Number(elements["throw-power"].value) * 100)}%`; });
 			}
 
 			async function generate() {
@@ -311,10 +319,11 @@
 				}
 				state.ball = state.ballMesh = null;
 				const model = state.model;
+				const profile = balanceProfile(model);
 				const body = new CANNON.Body({
 					/* mass：像素總質量；linearDamping、angularDamping：共同空氣耗散。
 					 * allowSleep、sleepSpeedLimit、sleepTimeLimit：停止偵測與性能控制。 */
-					mass: model.mass, linearDamping: 0.1, angularDamping: 0.1, allowSleep: true, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.6
+					mass: model.mass, linearDamping: 0.1, angularDamping: profile.angularDamping, allowSleep: true, sleepSpeedLimit: 0.08, sleepTimeLimit: 0.6
 				});
 				const orientation = new CANNON.Quaternion();
 				orientation.setFromEuler(0, model.angle, 0);
@@ -331,12 +340,15 @@
 				body.updateSolveMassProperties();
 				state.world.addBody(body);
 				state.target = body;
+				body.addEventListener("collide", assistEdgeCollision);
 				state.mesh = makeGlyphMesh(model);
 				state.scene.add(state.mesh);
 				state.marker = new THREE.Mesh(new THREE.SphereGeometry(0.045), new THREE.MeshBasicMaterial({ /* color：固定重心標記色。 */ color: 0xf0ca65 }));
 				state.scene.add(state.marker);
 				state.running = false;
 				state.elapsed = state.quiet = 0;
+				state.assistUsed = false;
+				state.lastAssist = state.lastLaunch = null;
 				updateStats();
 				drawPreview();
 				syncMeshes();
@@ -493,6 +505,102 @@
 				elements.mass.textContent = model.mass.toFixed(3);
 				elements.stability.textContent = model.stability.toFixed(3);
 				elements.agility.textContent = agility.toFixed(2);
+				const profile = balanceProfile(model);
+				elements.balance.textContent = `筆畫覆蓋率 ${(profile.coverage * 100).toFixed(1)}% · 進攻預算 ${(profile.offense * 100).toFixed(1)}% ／防守配置 ${(profile.defense * 100).toFixed(1)}%。兩者合計固定 100%。`;
+			}
+
+			function balanceProfile(model) {
+				// 以有效筆畫覆蓋分配同一預算，字體只改幾何，不以字名指定能力。
+				const alpha = model?.cells?.reduce((sum, cell) => sum + Math.max(0, Math.min(1, Number(cell.alpha) || 0)), 0) || 0;
+				const coverage = Math.max(0, Math.min(1, alpha / (config.grid * config.grid)));
+				const defense = 0.25 + 0.5 * coverage;
+				return {
+					/* coverage：共同尺寸框中的有效筆畫覆蓋率；offense、defense：互補攻守預算。
+					 * angularDamping：真正供引擎使用的防守角耗散，明示為遊戲平衡規則。 */
+					coverage, offense: 1 - defense, defense, angularDamping: 0.08 + 0.24 * defense
+				};
+			}
+
+			function launchBudget(model, power) {
+				const mass = Number(model?.mass);
+				const validMass = Number.isFinite(mass) && mass > 0 ? mass : 0;
+				const strength = Number.isFinite(power) ? Math.max(0, Math.min(1, power)) : 0;
+				const energyBudget = validMass ? 0.8 * balanceProfile(model).offense * strength * strength : 0;
+				// 同時限制速度與衝量，稀疏字也不會因除以極小質量得到無限速度。
+				const impulse = validMass ? Math.min(Math.sqrt(2 * validMass * energyBudget), validMass * 6, 1.2) : 0;
+				const speed = validMass ? impulse / validMass : 0;
+				return {
+					/* energyBudget：可用總能量；impulse、speed：受上限約束的 COM 發射量。
+					 * energy：實際可施加總能量，含後續分配的高度與平移動能。 */
+					energyBudget, impulse, speed, energy: 0.5 * validMass * speed * speed
+				};
+			}
+
+			function launch() {
+				reset();
+				const model = state.model;
+				const budget = launchBudget(model, Number(elements["throw-power"].value));
+				// 高度的重力位能必須從同一預算扣除，不能让重字額外得到攻擊能量。
+				const height = Math.min(0.6, budget.energy / (2 * model.mass * config.gravity));
+				const kinetic = Math.max(0, budget.energy - model.mass * config.gravity * height);
+				const impulse = Math.sqrt(2 * model.mass * kinetic);
+				state.target.position.x -= 1;
+				state.target.position.y += height;
+				state.target.aabbNeedsUpdate = true;
+				state.target.wakeUp();
+				state.target.applyImpulse(new CANNON.Vec3(impulse, 0, 0), new CANNON.Vec3());
+				state.lastLaunch = budget;
+				state.running = true;
+				elements.status.textContent = `投擲能量預算 ${budget.energyBudget.toFixed(3)} J，實際 ${budget.energy.toFixed(3)} J（已含高度）；發射速度 ${state.target.velocity.length().toFixed(2)} m/s。`;
+				if (budget.energy < budget.energyBudget - 1e-8) elements.status.textContent += "已受速度／衝量上限限制。";
+				setButtons();
+			}
+
+			function edgeProfile(model, point) {
+				const world = new CANNON.Quaternion();
+				world.setFromEuler(0, -model.angle, 0);
+				const raw = world.vmult(point);
+				const x = raw.x + model.cx, z = raw.z + model.cz;
+				const nearest = model.cells.reduce((best, cell) => Math.hypot(cell.x - x, cell.z - z) < Math.hypot(best.x - x, best.z - z) ? cell : best, model.cells[0]);
+				const occupied = new Set(model.cells.map((cell) => `${cell.row},${cell.col}`));
+				const neighbors = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+				const edge = neighbors.some(([row, col]) => !occupied.has(`${nearest.row + row},${nearest.col + col}`));
+				const radius = 0.16 + model.step / 2;
+				const area = model.cells.reduce((sum, cell) => Math.hypot(cell.x - x, cell.z - z) <= radius ? sum + cell.alpha * model.step * model.step : sum, 0);
+				const fraction = Math.max(0.05, Math.min(1, area / (Math.PI * radius * radius)));
+				return {
+					/* edge：撞擊位置是否在筆畫邊界；fraction：共同接觸足跡的有效覆蓋。
+					 * gain：邊緣小面積的受限撬起倍率，內部不額外加成。 */
+					edge, fraction, gain: edge ? 1 + 2 * (1 - fraction) : 1
+				};
+			}
+
+			function assistEdgeCollision(event) {
+				if (!state.running || state.assistUsed || event.body !== state.ball) return;
+
+				const body = state.target, contact = event.contact;
+				const offset = contact.bi === body ? contact.ri : contact.rj;
+				const point = body.quaternion.conjugate().vmult(offset);
+				const profile = edgeProfile(state.model, point);
+				const impact = Math.abs(contact.getImpactVelocityAlongNormal());
+				if (!profile.edge || profile.gain <= 1.01 || impact < 0.5) return;
+
+				// 僅加一次真實衝量，額外能量包含平移、旋轉與既有速度的交叉項。
+				const localVelocity = body.quaternion.conjugate().vmult(body.angularVelocity);
+				const torque = point.cross(body.quaternion.conjugate().vmult(new CANNON.Vec3(0, 1, 0)));
+				const inverse = body.invInertia;
+				const quadratic = 1 / body.mass + torque.x * torque.x * inverse.x + torque.y * torque.y * inverse.y + torque.z * torque.z * inverse.z;
+				const linear = body.velocity.y + localVelocity.dot(torque);
+				const energyCap = 0.12;
+				const capped = (-linear + Math.sqrt(linear * linear + 2 * quadratic * energyCap)) / quadratic;
+				const impulse = Math.min(0.3, capped, 0.25 * body.mass * impact * (profile.gain - 1));
+				body.wakeUp();
+				body.applyImpulse(new CANNON.Vec3(0, impulse, 0), offset);
+				state.assistUsed = true;
+				state.lastAssist = {
+					/* gain：本次接觸的理論倍率；impulse：實際補充衝量；energy：實際動能增量，受限於 0.12 J。 */
+					gain: profile.gain, impulse, energy: linear * impulse + 0.5 * quadratic * impulse * impulse
+				};
 			}
 
 			function drawPreview() {
@@ -559,7 +667,7 @@
 			function setButtons() {
 				elements.generate.disabled = state.busy;
 				elements.reset.disabled = !state.model || state.busy;
-				elements.lift.disabled = elements.drop.disabled = !state.model || state.busy || state.running;
+				elements.lift.disabled = elements.drop.disabled = elements.launch.disabled = !state.model || state.busy || state.running;
 			}
 
 			function syncMeshes() {
@@ -604,6 +712,8 @@
 				if (normal.y > 0.85) result = "正面朝上，沒有翻面";
 				else if (normal.y < -0.85) result = "背面朝上，翻面成功";
 				elements.status.textContent = `停止結果：${result}。`;
+				if (state.lastAssist) elements.status.textContent += `邊緣撬起倍率 ${state.lastAssist.gain.toFixed(2)}，動能變化 ${state.lastAssist.energy.toFixed(3)} J；彈起本身不算擊殺。`;
+				if (state.lastLaunch) elements.status.textContent += `投擲實際能量 ${state.lastLaunch.energy.toFixed(3)} J。`;
 				setButtons();
 			}
 

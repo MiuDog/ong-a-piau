@@ -30,6 +30,7 @@ flowchart TD
 
 - `config` 固定取樣解析度、字形框尺寸、厚度、密度、重力及 alpha 門檻。
 - `state` 持有目前字形模型、施力位置、物理世界、顯示資源與結算狀態。
+- `state.assistUsed` 避免同一球體在多個格上觸發重複加成，`lastAssist` 記錄真正施加的量；`lastLaunch` 記錄攻方能量預算與實際上限。
 - `elements` 以 HTML 元素 ID 為鍵、對應 DOM 元素為值，綁定設定與結果畫面。
 - `cache` 以輸入字形與實際字體家族組合作為鍵，保存本次網頁中的取樣資料。
 - 像素的 alpha 是有效材料覆蓋率；所有字形共用材料密度。背景碰撞格為整格近似，質量以覆蓋率估計。
@@ -60,6 +61,27 @@ flowchart TD
 
 固定世界步長為 1/120 秒。停止判定分别檢查線速度與角速度，並確認桌面接觸；超過測試時間仍未停止，不偷偷強制翻面。重置會移除舊剛體、幾何、材質及紋理，避免重复操作累積顯示資源。
 
+## 遊戲平衡與邊緣加成
+
+```mermaid
+flowchart TD
+	Model[有效 alpha 覆蓋率] --> Profile[balanceProfile]
+	Profile --> Defense[reset → angularDamping]
+	Profile --> Budget[launchBudget]
+	Power[投擲力道] --> Budget
+	Budget --> Launch[launch]
+	Launch --> Potential[扣除 Mg 高度]
+	Potential --> COM[在 COM 施加平移衝量]
+	Contact[真實 collide 事件] --> Assist[assistEdgeCollision]
+	Assist --> Patch[edgeProfile]
+	Patch --> Limit[完整動能增量上限]
+	Limit --> Once[一次補充向上衝量]
+	Once --> Sim[物理旋轉與落地]
+	Sim --> Settle[settle：正面存活／背面成功]
+```
+
+O/D 是使用者要求的互補遊戲配置，非新自然定律。發射上限先計算可施加總能量，再將其中一部分分配高度，其餘施加 COM 衝量。邊緣加成使用相對接觸點的力臂與逆慣量，限制 `ΔKE = bJ + kJ²/2`，包含當前動量的交叉項。真正的接觸方盒保持不可見。
+
 ## 函式責任清單
 
 | 函式 | 責任與主要分支 |
@@ -82,6 +104,11 @@ flowchart TD
 | `makePath` | forEach 把影像點轉為主軸轉換前的 Shape/Path，形成外框或孔洞。 |
 | `clearBody` | 移除剛體及顯示物件，逐一 dispose 幾何、材質與紋理。 |
 | `updateStats` | 顯示质量、理論翻倒能量與所選力臂的單位衝量角速度。 |
+| `balanceProfile` | alpha 覆蓋累加回呼產生互補攻守配置與真正角耗散。 |
+| `launchBudget` | 驗證質量與力道，計算總能量並限制速度／衝量；無效質量回有限零值。 |
+| `launch` | 重置真實字形，扣除位能後施加 COM 平移衝量，記錄實際能量。 |
+| `edgeProfile` | 主軸接觸點轉回字形框，以 reduce/map/some 回呼求最近筆畫、邊界與局部覆蓋倍率。 |
+| `assistEdgeCollision` | collide 回呼確認測試球與單次條件，完整動能限額內補充力臂衝量。 |
 | `drawPreview` | 顯示完整字形紋理、重心與施力點，不繪製碰撞格。 |
 | `selectPoint` | 將點選位置對應到有效像素；空白處顯示提示，忙碌或測試時拒絕操作。 |
 | `lift` | 重置後在指定世界力臂施加向上衝量，顯示公式預測與實際初始角速度。 |
@@ -114,6 +141,20 @@ flowchart TD
 | `leverageCheck` | 同一物件不同施力點的旋轉差異。 |
 | `verdictCheck` | 桌面正背面、側立、空中與移動中的判面條件。 |
 | `collisionCheck` | 固定步進下驗證實際球體接觸與動量交換。 |
+
+攻守驗收另由 Astra 在 [tests/balance.cjs](tests/balance.cjs) 定義。測試檔同樣受到保護；主要驗證覆蓋率的攻守單調、互補預算、有界投擲與真正剛體耗散，不以顯示百分比冒充物理作用。
+
+| 攻守測試函式 | 責任 |
+| --- | --- |
+| `main`、`instrumentRoute`、`runChecks` | 啟動測試瀏覽器、注入唯測試接點並協調八組驗收；主函式記錄 pageerror。 |
+| `near`、`requireCondition`、`check` | 容差、條件與分項結果驗證。 |
+| `sample`、內部 `knownImage` | 建立不同覆蓋率的解析矩形 fixture，避免依賴特定字體。 |
+| `expectedBudget` | 以獨立規則计算能量、速度與衝量預期。 |
+| `profileCheck`、`budgetCheck`、`inputCheck` | 攻守單調、完整發射公式及空白／無效質量／emoji 邊界。 |
+| `launchCheck`、`dampingCheck` | 真正剛體的高度＋動能預算與角阻尼作用。 |
+| `edgeProfileCheck` | 小接觸面積較大倍率、倍率有界及內部無加成。 |
+| `kineticEnergy`、`edgeEnergyCheck` | 世界慣量總動能驗證，涵蓋既有速度交叉項與重複接觸保護。 |
+| `edgeCollisionCheck`、內部 `recordContact` | 記錄真正球體接觸，確認只補一次衝量，且最後正面不淘汰。 |
 
 物理公式與必要預期由 GPT-6 Astra 蒸餾並定義，記錄於 [physics-distillation.md](docs/physics-distillation.md)。三個屬性是同一物理模型的描述，不另行乘上攻防或成功率係數。
 
