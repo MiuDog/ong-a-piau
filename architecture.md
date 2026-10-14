@@ -278,7 +278,7 @@ flowchart TD
 | `kineticEnergy`、`edgeEnergyCheck` | 世界慣量總動能驗證，涵蓋既有速度交叉項與重複接觸保護。 |
 | `edgeCollisionCheck`、內部 `recordContact` | 記錄真正球體接觸，確認只補一次衝量，且最後正面不淘汰。 |
 
-物理公式與必要預期由 GPT-6 Astra 蒸餾並定義，記錄於 [physics-distillation.md](docs/physics-distillation.md)。三個屬性是同一物理模型的描述，不另行乘上攻防或成功率係數。
+物理公式與必要預期由 GPT-6 Astra 整理並定義，記錄於 [physics-model.md](docs/physics-model.md)。三個屬性是同一物理模型的描述，不另行乘上攻防或成功率係數。
 
 網頁需網路載入 Three.js、cannon-es 及 Noto 字體。標楷體和 emoji 外觀依裝置，取樣、紋理與物理同步使用實際顯示字形。低解析碰撞與高解析顯示輪廓之間有近似誤差；攻守配置有取捨，但不宣稱所有 Unicode 字形與配對勝率已相同。第一版不含 LAN 或 3～8 人對戰。
 

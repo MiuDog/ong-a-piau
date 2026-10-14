@@ -1,8 +1,8 @@
-# 字形薄片物理蒸餾
+# 字形薄片物理模型與規則說明
 
 本階段僅建立可操作的字形物理實驗室。參考查核日期：2026-10-13。此文件規定本專案的物理近似與驗收；不宣稱重製參考遊戲的引擎。
 
-此文件保留物理校準與蒸餾步驟的契約；目前第一版亦已加入正式對局。回合、捕獲、桌面支撐、6：0勝負及電腦的現行驗收見 [game-validation.md](game-validation.md)，完整能量與介面規格見 [specification.md](specification.md)。
+此文件保留物理校準與規則整理步驟的契約；目前第一版亦已加入正式對局。回合、捕獲、桌面支撐、6：0勝負及電腦的現行驗收見 [game-validation.md](game-validation.md)，完整能量與介面規格見 [specification.md](specification.md)。
 
 ## 參考證據與取捨
 
