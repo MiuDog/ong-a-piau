@@ -240,7 +240,7 @@ flowchart TD
 | `supportedStackRemovalCheck`、`newThrowInvalidatesSupportCheck` | 失去下層支撐或重新投擲時，喚醒並失效舊紀錄。 |
 | `sampleRawRectangle`、內部 `knownImage`、`normalizedBalanceCheck` | 解析覆蓋率階段驗重量、完整投擲能量、幾何與重心保持，以及不污染校準模型。 |
 | `kineticEnergy`、`gameEdgeEnergyCheck` | 以世界慣量計算真正動能增量，驗攻方份額、一次助推、衝量上限且不直接改姿態／權屬。 |
-| `deferredContactCheck`、`circularBattlefieldCheck` | 驗接觸求解後一般助推、動能上限與佇列隔離；圓周真碰撞小反彈、低擋邊允許高飛片跨過。 |
+| `deferredContactCheck`、`circularBattlefieldCheck` | 驗接觸求解後一般助推、動能上限與佇列隔離；圓周真碰撞小反彈、全高度邊界限制高速／高飛片往內反射。 |
 | `relativeFaceCheck`、`missingFaceBaselineCheck` | 驗正↔背雙向相對翻面與特效；同面旋轉及初始空中／移動／側立沒有基準，不能捕獲。 |
 | `spawnSafetyCheck` | 驗成功出生的完整形狀在牆內且不重疊，能量不變；手中及桌面枚全阻塞拒絕時不改原對局。 |
 
@@ -307,4 +307,25 @@ flowchart TD
 | `perimeterDragCheck`（測試） | 四邊真滑鼠向內投擲及實際世界速度方向，拒絕中央、向外與短拖。 |
 | `coveragePressureCheck`、`collisionAudioCheck`、`graphemeAndFacesCheck`（測試） | 解析覆蓋／近邊內側與實際衝量、己方免捕獲；音訊啟動／強度／配對限流；單字素／組合emoji與彩色雙面材質。 |
 
-圓周材質反彈0.15與薄片相乘，低速耗散只降低、不提高擋邊係數。低擋邊允許高拋跨過；無出界奪取。正反面共用字形紋理，背面冷色調区分，emoji原色仍可辨識。
+圓周材質反彈0.15與薄片相乘，低速耗散只降低、不提高擋邊係數。postStep全高度圓周保護補上快甩／爆炸跨越低擋邊的情況；無出界奪取。正反面共用字形紋理，背面冷色調区分，emoji原色仍可辨識。
+
+## 全高度圓周限制與場內投擲
+
+```mermaid
+flowchart TD
+	Prepare[prepareGameThrow] --> Radius[gameCoinRadius：真像素角點外接半徑]
+	Radius --> Spawn[場內安全圓周截斷出生點]
+	Spawn --> Inward{初速指向內側且無重疊}
+	Inward -->|否| Reject[拒投或另試候選，不耗回合]
+	Inward -->|是| Sim[玩家及CPU共用真物理發射]
+	Sim --> Post[每個postStep → confineGameCoins]
+	Post --> Reflect[越界位置回到安全圓內，向外法向速度反射−0.15倍]
+```
+
+| 函式 | 責任 |
+| --- | --- |
+| `gameCoinRadius` | 從所有alpha有效像素的實際角點及厚度取得三維外接半徑，保障任意翻轉仍留整片於圓內。 |
+| `confineGameCoins` | 所有場上body、任何高度及ready狀態也受限；回到安全圓內，只反射向外速度，保留切向／垂直及q／ω，失效舊支撐並喚醒。 |
+| `assertInsideCircle`、`inwardBoundaryCheck`、`inwardLaunchCheck`（測試） | 真碰撞形狀全角點留場，高速／高空／爆炸後內彈、切向與垂直／旋轉保持、動能不增；玩家及CPU各仰角／最高甩速場內向內出生，拒投不耗回合。 |
+
+`prepareGameThrow`先拒絕場外／無效瞄準及零方向，以安全圓內target回推出生點，過長射程截斷但不增減原速度、仰角與能量。箭頭改為出手方向與瞄準點，經邊界反射後落點不保證仍在瞄準點。

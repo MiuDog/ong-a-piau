@@ -108,7 +108,7 @@
 			<section id="match" hidden>
 				<div class="scoreboard"><div id="score-0" class="score player-0"></div><div id="score-1" class="score player-1"></div></div>
 				<div class="match-layout">
-					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從外圍往內拖曳，放開投擲"><div class="launch-zone">從四周往內拖曳，快滑快投</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">外圍拖曳：滑越快，投得越快。箭頭指向預計落點；每次向下落地震動附近薄片，25%機率大範圍爆炸。穩定落地後朝上面與受擊前相反才被奪取。</p></div>
+					<div><div id="game-board" tabindex="0" aria-label="3D 桌面；從外圍往內拖曳，放開投擲"><div class="launch-zone">從四周往內拖曳，快滑快投</div><svg id="throw-preview" hidden aria-hidden="true"><defs><marker id="landing-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0 L8 4 L0 8 Z" fill="#256979"/></marker></defs><line id="throw-arrow" stroke="#256979" stroke-width="3" marker-end="url(#landing-arrowhead)"/></svg></div><p class="legend">外圍拖曳：滑越快，投得越快。箭頭顯示出手方向與瞄準點；每次向下落地震動附近薄片，25%機率大範圍爆炸。穩定落地後朝上面與受擊前相反才被奪取。</p></div>
 					<aside class="panel battle-controls">
 						<div><h2 id="turn-label"></h2><p id="match-status" role="status" aria-live="polite"></p><div id="winner" hidden></div></div>
 						<div><div id="coin-list"></div><p id="selected-stats" class="legend"></p></div>
@@ -185,7 +185,7 @@
 				 * walls：圓周64段低反彈擋邊；boundaryMesh：圓形地面與邊線；throwDirection：手勢在世界XZ的入射方向，電腦為null；aimMesh：不參與碰撞的瞄準記號；log：近期回合文字。
 				 * contacts：本步真實接觸及局部力臂，求解結束後才施加遊戲助推。
 				 * floorMaterial：遊戲地面材質；effects：純視覺捕獲及落地衝擊特效，不參與物理與勝負。
-				 * drag：目前手勢及預測落點；swipeSpeed：手勢速度；groundImpactUsed：一次連續接地只產生一波，真離地再啟用。
+				 * drag：目前手勢及瞄準點；swipeSpeed：手勢速度；groundImpactUsed：一次連續接地只產生一波，真離地再啟用。
 				 * lastGroundImpact：震波範圍、能量及受影響枚，供背景驗證，不參與判面。 */
 				active: false, mode: "cpu", current: 0, thrower: 0, status: "setup", winner: null, coins: [],
 				selectedId: null, thrownId: null, aim: null, angleDegrees: 35, turn: 1, elapsed: 0, quiet: 0,
@@ -223,6 +223,7 @@
 				state.world.defaultContactMaterial.friction = 0.4;
 				state.world.defaultContactMaterial.restitution = 0.1;
 				state.world.addEventListener("postStep", flushGameContacts);
+				state.world.addEventListener("postStep", confineGameCoins);
 				// 保留原求解器，僅在解真接觸前處理低速微彈，不降低高速撞靜止片的彈性。
 				const solveContacts = state.world.solver.solve.bind(state.world.solver);
 				state.world.solver.solve = (dt, world) => { updateGameRestitution(world.contacts); return solveContacts(dt, world); };
@@ -1257,9 +1258,44 @@
 				return 0.8 + 0.4 * normalized;
 			}
 
+			function gameCoinRadius(model) {
+				// 所有真像素角點的三維外接半徑，任意翻轉也能保留完整薄片在圓內。
+				return model.cells.reduce((radius, cell) => Math.max(radius, Math.hypot(Math.abs(cell.x - model.cx) + model.step / 2, Math.abs(cell.z - model.cz) + model.step / 2, config.thickness / 2)), 0);
+			}
+
+			function confineGameCoins() {
+				if (!game.active) return;
+
+				// 全高度圓周保護：高速或爆炸越過低擋邊時，只將向外法向速度反射向內。
+				for (const coin of game.coins) {
+					const body = coin.body;
+					if (!body) continue;
+
+					const radius = Math.hypot(body.position.x, body.position.z), limit = 9 - gameCoinRadius(coin.model) - 0.08;
+					if (radius < limit || radius < 1e-9) continue;
+
+					const nx = body.position.x / radius, nz = body.position.z / radius;
+					body.position.x = nx * (limit - 1e-6);
+					body.position.z = nz * (limit - 1e-6);
+					const outward = body.velocity.x * nx + body.velocity.z * nz;
+					if (outward > 0) {
+						body.velocity.x -= 1.15 * outward * nx;
+						body.velocity.z -= 1.15 * outward * nz;
+						playCollisionSound(body, game.walls[0] || state.floor, outward);
+					}
+					body.aabbNeedsUpdate = true;
+					coin.supportSnapshot = null;
+					body.wakeUp();
+				}
+			}
+
 			function prepareGameThrow(coin) {
 				// 在拿起桌面枚、改回合前預檢，拒絕時保留整場狀態。
 				const model = coin.model;
+				if (![game.aim.x, game.aim.z].every(Number.isFinite) || Math.hypot(game.aim.x, game.aim.z) > 7.5 + 1e-9) return null;
+				if (game.throwDirection && (!Number.isFinite(game.throwDirection.x) || !Number.isFinite(game.throwDirection.z) || Math.hypot(game.throwDirection.x, game.throwDirection.z) < 1e-9)) return null;
+				const safeRadius = 9 - gameCoinRadius(model) - 0.08, aim = game.aim.clone();
+				if (aim.length() > safeRadius * 0.98) aim.setLength(safeRadius * 0.98);
 				const profile = glyphPhysicsProfile(model), energy = profile.energy, height = profile.height;
 				const remaining = Math.max(0, energy - model.mass * config.gravity * height);
 				const linearEnergy = Math.min(remaining * 0.75, 18 * model.mass, 0.72 / model.mass);
@@ -1275,7 +1311,12 @@
 				for (let attempt = 0; attempt < 8; attempt++) {
 					const angle = initialAngle + attempt * Math.PI / 4;
 					const vx = horizontal * Math.cos(angle), vz = horizontal * Math.sin(angle);
-					const position = new CANNON.Vec3(game.aim.x - vx * flightTime, config.thickness / 2 + 0.003 + height, game.aim.z - vz * flightTime);
+					// 起點不能在場外；快甩的過長回推在圓周截斷，保留速度、仰角與字形能量。
+					const dx = Math.cos(angle), dz = Math.sin(angle), dot = aim.x * dx + aim.z * dz;
+					const backDistance = dot + Math.sqrt(Math.max(0, dot * dot + safeRadius * safeRadius - aim.x * aim.x - aim.z * aim.z));
+					const distance = Math.min(horizontal * flightTime, backDistance);
+					const position = new CANNON.Vec3(aim.x - dx * distance, config.thickness / 2 + 0.003 + height, aim.z - dz * distance);
+					if (position.x * vx + position.z * vz >= -1e-9) continue;
 					const body = makeGameBody(model, position);
 					body.updateAABB();
 					const box = body.aabb;
@@ -1606,6 +1647,7 @@
 				const error = 0.3;
 				aim.x += (Math.random() - 0.5) * 2 * error;
 				aim.z += (Math.random() - 0.5) * 2 * error;
+				if (Math.hypot(aim.x, aim.z) > 7.5) aim.multiplyScalar(7.5 / Math.hypot(aim.x, aim.z));
 
 
 				return { /* coinId：合法可用枚；aim：有誤差的桌面目標；angleDegrees：同真人的仰角範圍，無能量特權。 */ coinId: coin.id, aim, angleDegrees };
@@ -1649,7 +1691,7 @@
 				unlockGameAudio();
 
 				game.drag = {
-					/* active、pointerId：單一有效手勢；startX、startY：外圍起點；startWorld：桌面世界起點；landing：預計落點。
+					/* active、pointerId：單一有效手勢；startX、startY：外圍起點；startWorld：桌面世界起點；landing：瞄準點，碰撞或邊界反彈後落點會改變。
 					 * startTime：手勢事件起始時間；lastX、lastY：上一點；pathLength：真實滑動路徑；speed：按戰場高度正規化的速度。 */
 					active: true, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, startWorld: gamePointerPoint(event), landing: game.aim.clone(),
 					startTime: event.timeStamp, lastX: event.clientX, lastY: event.clientY, pathLength: 0, speed: 0
@@ -1688,7 +1730,7 @@
 				if (!game.drag?.active || event.pointerId !== game.drag.pointerId) return;
 
 				updateGameDrag(event);
-				const valid = inwardDragDistance(game.drag, event, getGameElement("game-board").getBoundingClientRect()) >= 12;
+				const valid = inwardDragDistance(game.drag, event, getGameElement("game-board").getBoundingClientRect()) >= 12 && game.aim.lengthSq() < game.drag.startWorld.lengthSq();
 				const direction = game.aim.clone().sub(game.drag.startWorld).setY(0).normalize();
 				const speed = game.drag.speed;
 				cancelGameDrag();
